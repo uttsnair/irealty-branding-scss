@@ -1,0 +1,9 @@
+{
+  "name": "brand-studio-extractor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Website brand extractor API for iRealty Brand Studio",
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
