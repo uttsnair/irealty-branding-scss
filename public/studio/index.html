@@ -390,6 +390,12 @@ const _TOP_END = (function(){ const i=_BL_LINES.findIndex(l=>l.indexOf('CUSTOM V
 const _LP_START = _BL_LINES.findIndex(l=>/^\s*\$lp-/.test(l));
 const _LP_END = (function(){ for(let i=_BL_LINES.length-1;i>=0;i--){ if(/^\s*\$lp-/.test(_BL_LINES[i])) return i; } return -1; })();
 function inRegion(i){ return (i<_TOP_END) || (_LP_START>=0 && i>=_LP_START && i<=_LP_END); }
+
+// baseline default value for every variable, so the generator only writes an
+// override when the client's value actually differs (otherwise it falls through
+// to the baseline — "baseline applies where the client has none")
+const BASE_DEFAULTS=(function(){ const m={}; _BL_LINES.forEach(l=>{ const mm=l.match(/^\s*\$([a-zA-Z0-9\-]+)\s*:\s*(.*?);\s*$/); if(mm && !(mm[1] in m)) m[mm[1]]=mm[2].trim(); }); return m; })();
+function _normVal(v){ v=String(v).trim().replace(/;+\s*$/,'').trim().toLowerCase().replace(/\s+/g,' '); const h=v.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/); if(h) v='#'+h[1]+h[1]+h[2]+h[2]+h[3]+h[3]; return v; }
 function setVar(lines, name, value, changed){
   if(value===null||value===undefined||value==='') return;
   const re=new RegExp('^\\s*\\$'+name.replace(/[-]/g,'\\-')+'\\s*:');
@@ -420,65 +426,76 @@ function readState(){
 
 function generate(){
   const s=readState();
-  const lines=BASELINE.split('\n');
+  const lines=BASELINE.split('\n');   // landing-page ($lp-*) overrides are written in place here; everything else goes in the Custom Variable Block
   const ch=new Set();
+  const ov={};                        // ordered client overrides -> Custom Variable Block
   const bodyStack=buildStack(s.bodyFont), headStack=buildStack(s.headFont);
+  // set() routes each variable: lp-* in place (they're re-declared below the block, so a block override wouldn't hold),
+  // everything else into the override block — and only when it differs from the baseline default.
+  const set=(name,value)=>{
+    if(value===null||value===undefined||value==='') return;
+    if(name.indexOf('lp-')===0){ setVar(lines,name,value,ch); return; }
+    const clean=String(value).replace(/;+\s*$/,'').trim();
+    if(BASE_DEFAULTS.hasOwnProperty(name) && _normVal(clean)===_normVal(BASE_DEFAULTS[name])) return; // same as baseline -> let it fall through
+    ov[name]=clean; ch.add(name);
+  };
 
-  setVar(lines,'primary-color',s.primary,ch);
-  setVar(lines,'secondary-color',s.secondary,ch);
-  setVar(lines,'email-bg',s.emailBg,ch);
-  setVar(lines,'container-bg',s.contentBg,ch);
-  setVar(lines,'section-bg',s.contentBg,ch);
-  setVar(lines,'text-bg',s.contentBg,ch);
+  set('primary-color',s.primary);
+  set('secondary-color',s.secondary);
+  set('email-bg',s.emailBg);
+  set('container-bg',s.contentBg);
+  set('section-bg',s.contentBg);
+  set('text-bg',s.contentBg);
 
-  HEAD_FONT.forEach(n=>setVar(lines,n,headStack,ch));
-  BODY_FONT.forEach(n=>setVar(lines,n,bodyStack,ch));
-  HEAD_COLOR.forEach(n=>setVar(lines,n,s.headColor,ch));
-  BODY_COLOR.forEach(n=>setVar(lines,n,s.bodyColor,ch));
-  setVar(lines,'header-weight',s.headWeight,ch);
-  setVar(lines,'font-weight',s.bodyWeight,ch);
+  HEAD_FONT.forEach(n=>set(n,headStack));
+  BODY_FONT.forEach(n=>set(n,bodyStack));
+  HEAD_COLOR.forEach(n=>set(n,s.headColor));
+  BODY_COLOR.forEach(n=>set(n,s.bodyColor));
+  set('header-weight',s.headWeight);
+  set('font-weight',s.bodyWeight);
 
-  setVar(lines,'logo-bg',s.logoBg,ch);
-  setVar(lines,'logo-width',s.logoW,ch);
-  setVar(lines,'logo-align',s.logoAlign,ch);
+  set('logo-bg',s.logoBg);
+  set('logo-width',s.logoW);
+  set('logo-align',s.logoAlign);
 
-  BTN_BG.forEach(n=>setVar(lines,n,s.btnBg,ch));
-  BTN_TEXT.forEach(n=>setVar(lines,n,s.btnColor,ch));
-  setVar(lines,'button-border-radius',s.btnRadius,ch);
-  setVar(lines,'lp-btn-radius',s.btnRadius,ch);
-  setVar(lines,'lp-btn-bg',s.btnBg,ch);
-  setVar(lines,'lp-btn-fontcolor',s.btnColor,ch);
+  BTN_BG.forEach(n=>set(n,s.btnBg));
+  BTN_TEXT.forEach(n=>set(n,s.btnColor));
+  set('button-border-radius',s.btnRadius);
 
-  TITLE_BG.forEach(n=>setVar(lines,n,s.titleBg,ch));
-  setVar(lines,'title-color',s.titleColor,ch);
+  TITLE_BG.forEach(n=>set(n,s.titleBg));
+  set('title-color',s.titleColor);
   // factsheet panel — inverted by default (light panel, dark text), per real client files
-  setVar(lines,'factsheet-bg',s.factsheetBg,ch);
-  setVar(lines,'factsheet-container-bg',s.factsheetBg,ch);
-  setVar(lines,'factsheet-color',s.factsheetColor,ch);
+  set('factsheet-bg',s.factsheetBg);
+  set('factsheet-container-bg',s.factsheetBg);
+  set('factsheet-color',s.factsheetColor);
 
-  FOOT_BG.forEach(n=>setVar(lines,n,s.footerBg,ch));
-  FOOT_TEXT.forEach(n=>setVar(lines,n,s.footerColor,ch));
-  setVar(lines,'footer-links-size',s.footerLinkSize,ch);
-  setVar(lines,'footer-logo-display',s.footerLogo,ch);
+  FOOT_BG.forEach(n=>set(n,s.footerBg));
+  FOOT_TEXT.forEach(n=>set(n,s.footerColor));
+  set('footer-links-size',s.footerLinkSize);
+  set('footer-logo-display',s.footerLogo);
   if(s.footerLogo==='true'){
-    setVar(lines,'footer-logo-align',s.footerLogoAlign,ch);
-    setVar(lines,'footer-logo-width',s.footerLogoW,ch);
+    set('footer-logo-align',s.footerLogoAlign);
+    set('footer-logo-width',s.footerLogoW);
   }
 
-  // landing page fonts/colours mirror email
-  setVar(lines,'lp-header-family',headStack,ch);
-  setVar(lines,'lp-subheader-family',headStack,ch);
-  setVar(lines,'lp-body-family',bodyStack,ch);
-  setVar(lines,'lp-header-color',s.headColor,ch);
-  setVar(lines,'lp-body-color',s.bodyColor,ch);
-  // remove the sample client hero image so we never leak another client's asset
-  setVar(lines,'lp-bg-img','null',ch);
+  // Landing pages inherit the email branding through the baseline's own fallback
+  // chain ($title-family -> $lp-header-family:null, $button-bg -> $lp-btn-bg:null,
+  // etc.), so we don't mirror those. The one exception with no fallback is the
+  // sample hero image, which we null in place so we never leak another client's asset.
+  set('lp-bg-img','null');
 
-  if(s.bedIcon) setVar(lines,'bed-icon-url',"url('"+s.bedIcon+"')",ch);
-  if(s.bathIcon) setVar(lines,'bath-icon-url',"url('"+s.bathIcon+"')",ch);
-  if(s.carIcon) setVar(lines,'car-icon-url',"url('"+s.carIcon+"')",ch);
+  if(s.bedIcon) set('bed-icon-url',"url('"+s.bedIcon+"')");
+  if(s.bathIcon) set('bath-icon-url',"url('"+s.bathIcon+"')");
+  if(s.carIcon) set('car-icon-url',"url('"+s.carIcon+"')");
 
-  return {scss:lines.join('\n'), count:ch.size, lines:lines.length, state:s};
+  // inject the client overrides into the Custom Variable Block; baseline declarations stay untouched
+  const si=lines.findIndex(l=>l.indexOf('CUSTOM VARIABLE START')>=0);
+  const ei=lines.findIndex(l=>l.indexOf('CUSTOM VARIABLE END')>=0);
+  const keys=Object.keys(ov);
+  const inner = keys.length ? ['', ...keys.map(k=>'$'+k+': '+ov[k]+';'), ''] : [''];
+  const out = (si>=0 && ei>si) ? lines.slice(0,si+1).concat(inner, lines.slice(ei)) : lines;
+  const scss=out.join('\n');
+  return {scss:scss, count:ch.size, lines:scss.split('\n').length, state:s};
 }
 
 let lastScss="";
