@@ -137,13 +137,19 @@
     <div class="group" style="border-color:#7c3aed">
       <h3 style="background:#f2ecfb;color:#7c3aed">Upload files</h3>
       <div class="body">
-        <div class="field"><label>Logo or brand image <span class="hint">reads colours &amp; background</span></label>
-          <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/svg+xml" multiple onchange="handleFiles(this.files)" style="font-size:12px">
+        <div class="field"><label>Logo, brand image, or brand-pack PDF <span class="hint">reads colours (+ background from images)</span></label>
+          <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,image/svg+xml,application/pdf,.pdf" multiple onchange="handleFiles(this.files)" style="font-size:12px">
         </div>
+        <div id="attachList" style="display:none;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
         <div class="field" id="uploadStatus" style="display:none;font-size:12px;margin-bottom:0"></div>
-        <div class="note" style="margin-bottom:0">Colours land in <b>Detected colours</b> above &mdash; click to assign. An uploaded logo is for colour &amp; preview only; the live logo still goes to the platform via S3 separately.</div>
+        <div class="note" style="margin-bottom:0">Colours land in <b>Detected colours</b> above &mdash; click to assign. PDF colours are auto-detected candidates &mdash; review them against the pack (a colour drawn in the artwork can differ from the labelled spec, and designer accents may slip in). Fonts aren&rsquo;t read from PDFs &mdash; set those by hand from the pack. An uploaded logo is for colour &amp; preview only; the live logo still goes to the platform via S3 separately.</div>
       </div>
     </div>
+
+    <div class="group">
+      <h3>Client</h3>
+      <div class="body">
+        <div class="field"><label>Client name</label>
           <input type="text" id="clientName" value="Broadhurst Property"></div>
       </div>
     </div>
@@ -619,9 +625,78 @@ function toHex(r,g,b){ return '#'+hex2(r)+hex2(g)+hex2(b); }
 function handleFiles(files){
   if(!files||!files.length) return;
   [...files].forEach(f=>{
-    if(f.type.indexOf('image/')===0) handleImageFile(f);
-    else upStatus('\u201c'+f.name+'\u201d isn\u2019t an image \u2014 PDF brand-pack scanning is coming in the next update.', false);
+    const isPdf = f.type==='application/pdf' || /\.pdf$/i.test(f.name);
+    if(f.type.indexOf('image/')===0){ addAttached(f.name,'image'); handleImageFile(f); }
+    else if(isPdf){ addAttached(f.name,'pdf'); handlePdfFile(f); }
+    else upStatus('\u201c'+f.name+'\u201d isn\u2019t an image or PDF.', false);
   });
+}
+
+// ---- attached-files reference list ----
+const attached=[];
+function addAttached(name,kind){ if(!attached.some(a=>a.name===name)){ attached.push({name,kind}); renderAttached(); } }
+function renderAttached(){
+  const w=document.getElementById('attachList'); w.innerHTML='';
+  attached.forEach((a,i)=>{
+    const chip=document.createElement('span');
+    chip.style.cssText='display:inline-flex;gap:6px;align-items:center;font-size:11px;padding:4px 8px;border:1px solid var(--line);border-radius:14px;background:#fff';
+    chip.innerHTML=(a.kind==='pdf'?'\ud83d\udcc4 ':'\ud83d\uddbc\ufe0f ')+a.name.replace(/</g,'&lt;');
+    const x=document.createElement('button'); x.type='button'; x.textContent='\u00d7';
+    x.style.cssText='border:none;background:none;cursor:pointer;font-size:14px;line-height:1;color:var(--ink-soft)';
+    x.onclick=()=>{ attached.splice(i,1); renderAttached(); };
+    chip.appendChild(x); w.appendChild(chip);
+  });
+  w.style.display=attached.length?'flex':'none';
+}
+
+// ---- PDF brand-pack colour scanner (offline, no libraries) ----
+async function inflate(bytes, fmt){
+  const ds=new DecompressionStream(fmt);
+  const stream=new Blob([bytes]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function cmyk2rgb(c,m,y,k){ return [Math.round(255*(1-c)*(1-k)), Math.round(255*(1-m)*(1-k)), Math.round(255*(1-y)*(1-k))]; }
+async function handlePdfFile(file){
+  if(typeof DecompressionStream==='undefined'){ upStatus('This browser can\u2019t decompress PDFs \u2014 try Chrome, or upload the logo as PNG instead.', false); return; }
+  upStatus('Reading \u201c'+file.name+'\u201d\u2026', null);
+  try{
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const s=new TextDecoder('latin1').decode(bytes);   // index-aligned with bytes
+    // collect FlateDecode stream byte-ranges
+    const chunks=[]; let idx=0;
+    while((idx=s.indexOf('stream',idx))>=0){
+      if(s.startsWith('endstream', idx-3)){ idx+=6; continue; }
+      let start=idx+6;
+      if(s[start]==='\r'&&s[start+1]==='\n') start+=2; else if(s[start]==='\n'||s[start]==='\r') start+=1;
+      const end=s.indexOf('endstream', start);
+      if(end<0) break;
+      chunks.push(bytes.slice(start, end));
+      idx=end+9;
+    }
+    // inflate + scan colour operators
+    const counts=new Map();
+    const rgb3=/(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(rg|RG|sc|scn)\b/g;
+    const cmyk4=/(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(-?\d*\.?\d+)\s+(k|K|scn)\b/g;
+    const add=(r,g,b)=>{ if([r,g,b].every(v=>v>=0&&v<=255)){ const key=(r>>3)+'_'+(g>>3)+'_'+(b>>3); const o=counts.get(key)||{n:0,r:0,g:0,b:0}; o.n++;o.r+=r;o.g+=g;o.b+=b; counts.set(key,o);} };
+    for(const c of chunks){
+      let d=null;
+      for(const fmt of ['deflate','deflate-raw']){ try{ d=await inflate(c,fmt); break; }catch(e){} }
+      if(!d) continue;
+      const t=new TextDecoder('latin1').decode(d);
+      let m;
+      cmyk4.lastIndex=0; while((m=cmyk4.exec(t))){ const [c1,c2,c3,c4]=[+m[1],+m[2],+m[3],+m[4]]; if([c1,c2,c3,c4].every(v=>v>=0&&v<=1)){ const [r,g,b]=cmyk2rgb(c1,c2,c3,c4); add(r,g,b); } }
+      rgb3.lastIndex=0; while((m=rgb3.exec(t))){ const r=+m[1],g=+m[2],b=+m[3]; if([r,g,b].every(v=>v>=0&&v<=1)) add(Math.round(r*255),Math.round(g*255),Math.round(b*255)); }
+    }
+    // build candidates, filter noise
+    let arr=[...counts.values()].map(o=>({n:o.n,r:Math.round(o.r/o.n),g:Math.round(o.g/o.n),b:Math.round(o.b/o.n)}));
+    const keep=c=>{ const mx=Math.max(c.r,c.g,c.b),mn=Math.min(c.r,c.g,c.b); if(mn>245)return false; if(mx<12)return false; if((mx-mn)<10 && mx>30 && mx<235)return false; return true; };
+    arr=arr.filter(keep).sort((a,b)=>b.n-a.n).slice(0,10);
+    if(!arr.length){ upStatus('Read \u201c'+file.name+'\u201d but couldn\u2019t pull clear brand colours \u2014 enter them from the pack, or upload the logo as PNG.', false); return; }
+    renderPalette(arr.map(c=>toHex(c.r,c.g,c.b)));
+    upStatus('Read \u201c'+file.name+'\u201d: '+arr.length+' candidate colours \u2192 review against the pack, then click to assign. Set fonts by hand.', true);
+  }catch(e){
+    upStatus('Couldn\u2019t read \u201c'+file.name+'\u201d as a PDF. You can still upload the logo as a PNG.', false);
+  }
 }
 function handleImageFile(file){
   const url=URL.createObjectURL(file);
