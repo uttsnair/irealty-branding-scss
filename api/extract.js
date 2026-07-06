@@ -272,12 +272,111 @@ async function fetchLogoColours(logoUrl) {
   } catch (e) { return []; }
 }
 
+// ---------- reference image gallery (photos, hero/banner, brand graphics) ----------
+// These are for the person to eyeball and download by hand, then re-host on S3.
+// The tool never wires these URLs into the SCSS or a module.
+function extractImages($, base, logoSet) {
+  const out = new Map(); // absUrl -> score
+  const TRACK = /(facebook\.com\/tr|doubleclick|google-analytics|googletagmanager|\/pixel|spacer\.|blank\.gif|1x1\.|\/ads?\/)/i;
+  const add = (u, score, w, h) => {
+    if (!u) return;
+    try {
+      const abs = new URL(u.trim(), base).href;
+      if (/^data:/i.test(abs)) return;
+      if (TRACK.test(abs)) return;
+      if (logoSet && logoSet.has(abs)) return;              // already shown under "logo"
+      const isSvg = /\.svg(\?|$)/i.test(abs);
+      if (isSvg && /icon|sprite|arrow|chevron|bullet|favicon/i.test(abs)) return;
+      if ((w && w > 0 && w < 64) || (h && h > 0 && h < 64)) return; // tiny = icon/spacer
+      if (out.get(abs) === undefined || out.get(abs) < score) out.set(abs, score);
+    } catch (e) {}
+  };
+  // largest candidate from a srcset string
+  const fromSrcset = (ss) => {
+    if (!ss) return '';
+    const parts = ss.split(',').map((s) => s.trim().split(/\s+/)[0]).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : '';
+  };
+  $('img').each((i, el) => {
+    const $el = $(el);
+    let src = $el.attr('src') || $el.attr('data-src') || $el.attr('data-lazy-src') || '';
+    const ss = fromSrcset($el.attr('srcset') || $el.attr('data-srcset'));
+    if (ss) src = ss;
+    const w = parseInt($el.attr('width'), 10) || 0;
+    const h = parseInt($el.attr('height'), 10) || 0;
+    const hay = [$el.attr('class'), $el.attr('id'), $el.attr('alt')].join(' ').toLowerCase();
+    let score = 50 - i;
+    if (/hero|banner|slide|feature|cover|masthead/.test(hay)) score += 60; // hero/banner to the front
+    if (w >= 600 || h >= 400) score += 25;
+    add(src, score, w, h);
+  });
+  $('picture source').each((i, el) => add(fromSrcset($(el).attr('srcset')), 40 - i));
+  // inline background-image on any element (hero sections often use these)
+  $('[style]').each((i, el) => {
+    const st = $(el).attr('style') || '';
+    const m = st.match(/background(?:-image)?\s*:[^;]*url\(([^)]+)\)/i);
+    if (m) add(m[1].replace(/['"]/g, ''), 45);
+  });
+  $('meta[property="og:image"]').each((i, el) => add($(el).attr('content'), 45));
+  return [...out.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]).slice(0, 24);
+}
+
+// binary fetch for the download proxy (images can be larger than the HTML/CSS cap)
+const IMG_MAX = 12_000_000;
+async function fetchBinary(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      redirect: 'follow',
+      signal: ctrl.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; BrandStudioBot/1.0)' },
+    });
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { buf, status: r.status, contentType: r.headers.get('content-type') || '' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------- main handler ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+
+  // ---- download proxy: /api/extract?img=<url>&name=<filename> ----
+  // Browsers can't force-download a cross-origin image, so we stream it back with an
+  // attachment disposition. Image content only; same SSRF guards as the extractor.
+  let imgParam = (req.query && req.query.img) || '';
+  if (Array.isArray(imgParam)) imgParam = imgParam[0];
+  if (imgParam) {
+    let iu;
+    try { iu = new URL(imgParam); } catch (e) { res.status(400).json({ error: 'Invalid image URL' }); return; }
+    if (!/^https?:$/.test(iu.protocol) || hostLooksPrivate(iu.hostname)) { res.status(400).json({ error: 'Image URL not allowed' }); return; }
+    try {
+      const img = await fetchBinary(iu.href);
+      if (!/^image\//i.test(img.contentType)) { res.status(415).json({ error: 'That URL is not an image.' }); return; }
+      if (img.buf.length > IMG_MAX) { res.status(413).json({ error: 'Image is too large to proxy.' }); return; }
+      let name = (req.query && req.query.name) || '';
+      if (Array.isArray(name)) name = name[0];
+      if (!name) { name = (iu.pathname.split('/').pop() || 'image').split('?')[0] || 'image'; }
+      name = name.replace(/[^\w.\-]+/g, '_').slice(0, 80) || 'image';
+      if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
+        const ext = (img.contentType.split('/')[1] || 'jpg').split(';')[0].replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+        name += '.' + ext;
+      }
+      res.setHeader('Content-Type', img.contentType);
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '"');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).end(img.buf);
+    } catch (err) {
+      const aborted = err && err.name === 'AbortError';
+      res.status(aborted ? 504 : 502).json({ error: aborted ? 'The image took too long.' : 'Could not fetch that image.' });
+    }
+    return;
+  }
 
   let url = (req.query && req.query.url) || '';
   if (Array.isArray(url)) url = url[0];
@@ -328,6 +427,7 @@ module.exports = async (req, res) => {
     const svgLogo = logos.find((u) => /\.svg(\?|$)/i.test(u));
     const logoColours = await fetchLogoColours(svgLogo);
     const colours = extractColours(css, { themeColor, tileColor, logoColours, inlineColours });
+    const images = extractImages($, base, new Set(logos));
 
     const title = ($('title').first().text() || '').trim().slice(0, 80);
     const siteName = $('meta[property="og:site_name"]').attr('content') || title || parsed.hostname;
@@ -349,11 +449,13 @@ module.exports = async (req, res) => {
       allFonts: fonts.allFonts,
       logo: logos[0] || null,
       logoCandidates: logos,
+      images: images,
       notes: [
         'Best-guess extraction — review and correct before generating SCSS.',
         'Primary prefers the site theme-color / tile-color / logo colour over raw CSS frequency.',
         'Known framework defaults (e.g. Foundation #1779ba, Bootstrap blues) are filtered out of the brand colours.',
         'Logo is for reference/upload — it is not stored in the SCSS.',
+        'Images are reference only — download and re-host on S3; they are never wired into the SCSS or a module.',
       ],
     });
   } catch (err) {
@@ -366,4 +468,4 @@ module.exports = async (req, res) => {
 };
 
 // ---------- test hooks (safe for Vercel: attaching props to the handler export) ----------
-module.exports._internal = { extractColours, normHex, isFrameworkDefault, isNeutral };
+module.exports._internal = { extractColours, normHex, isFrameworkDefault, isNeutral, extractImages };
