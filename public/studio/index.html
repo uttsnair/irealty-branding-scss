@@ -29,6 +29,7 @@
   input[type=text],select{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:7px;font-size:13px;font-family:var(--sans);background:#fff}
   input[type=text]:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
   .colorrow{display:flex;gap:8px;align-items:center}
+  input.bad, select.bad, .colorrow input.bad{border-color:#dc2626 !important;background:#fff5f5 !important}
   .colorrow input[type=color]{width:38px;height:34px;padding:0;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer}
   .colorrow input[type=text]{flex:1}
   .rangerow{display:flex;align-items:center;gap:10px}
@@ -171,14 +172,14 @@
     <div class="group">
       <h3>Fonts</h3>
       <div class="body">
-        <div class="field"><label>Heading font <span class="hint">name or full stack</span></label>
-          <input type="text" id="headFont" value="Garamond"></div>
+        <div class="field"><label>Heading font <span class="hint">Google or web-safe &mdash; closest match auto-picked</span></label>
+          <select id="headFont" data-default="Garamond"></select></div>
         <div class="field"><label>Heading colour</label>
           <div class="colorrow"><input type="color" data-c="headColor"><input type="text" data-t="headColor" value="#333f48"></div></div>
         <div class="field"><label>Heading weight</label>
           <select id="headWeight"><option>300</option><option selected>400</option><option>500</option><option>600</option><option>700</option></select></div>
         <div class="field"><label>Body font</label>
-          <input type="text" id="bodyFont" value="Helvetica"></div>
+          <select id="bodyFont" data-default="Helvetica"></select></div>
         <div class="field"><label>Body colour</label>
           <div class="colorrow"><input type="color" data-c="bodyColor"><input type="text" data-t="bodyColor" value="#333333"></div></div>
         <div class="field"><label>Body weight</label>
@@ -253,12 +254,13 @@
     <div class="group">
       <h3>Amenity icons <span class="hint" style="text-transform:none;letter-spacing:0"></span></h3>
       <div class="body">
-        <div class="field"><label>Bed icon URL <span class="hint">blank = iRealty default</span></label>
-          <input type="text" id="bedIcon" placeholder="https://.../bed.png"></div>
-        <div class="field"><label>Bath icon URL</label>
-          <input type="text" id="bathIcon" placeholder="https://.../bath.png"></div>
-        <div class="field"><label>Car icon URL</label>
-          <input type="text" id="carIcon" placeholder="https://.../car.png"></div>
+        <div class="note" style="margin-bottom:10px">These drive the bed/bath/car icons on both emails <b>and landing pages</b>. Outside image links cause permission errors, so icons must be hosted on Suna S3 (<code>suna-template-files.s3&hellip;amazonaws.com</code>). Leave blank to keep the iRealty defaults.</div>
+        <div class="field"><label>Bed icon URL <span class="hint">Suna S3 only &middot; blank = default</span></label>
+          <input type="text" id="bedIcon" placeholder="https://suna-template-files.s3&hellip;/bed.png"></div>
+        <div class="field"><label>Bath icon URL <span class="hint">Suna S3 only</span></label>
+          <input type="text" id="bathIcon" placeholder="https://suna-template-files.s3&hellip;/bath.png"></div>
+        <div class="field"><label>Car icon URL <span class="hint">Suna S3 only</span></label>
+          <input type="text" id="carIcon" placeholder="https://suna-template-files.s3&hellip;/car.png"></div>
       </div>
     </div>
 
@@ -375,12 +377,69 @@ const TITLE_BG=['title-bg'];         // title-container-bg stays null (transpare
 const FOOT_BG=['footer-container-bg'];
 const FOOT_TEXT=['footer-details-color','footer-links-color','footer-divider-color'];
 
-function buildStack(name){
-  name=(name||'').trim();
+// ---- Approved fonts only: web-safe (need no @import) + curated Google set (need @import) ----
+const WEBSAFE_FONTS = {
+  'Arial':'Arial,Helvetica,sans-serif',
+  'Helvetica':'Helvetica,Arial,sans-serif',
+  'Verdana':'Verdana,Geneva,sans-serif',
+  'Tahoma':'Tahoma,Geneva,sans-serif',
+  'Trebuchet MS':"'Trebuchet MS',Helvetica,Arial,sans-serif",
+  'Georgia':'Georgia,serif',
+  'Times New Roman':"'Times New Roman',Times,serif",
+  'Garamond':"Garamond,Georgia,'Times New Roman',serif",
+  'Courier New':"'Courier New',Courier,monospace",
+  'Palatino Linotype':"'Palatino Linotype','Book Antiqua',Palatino,serif"
+};
+const WEBSAFE_NAMES = Object.keys(WEBSAFE_FONTS);
+const GOOGLE_FONTS = ['Archivo','Barlow','Bodoni Moda','Cormorant Garamond','DM Sans','EB Garamond','Inter','Josefin Sans','Karla','Libre Baskerville','Lato','Lora','Manrope','Merriweather','Montserrat','Mulish','Nunito','Open Sans','Oswald','Playfair Display','Poppins','PT Serif','Quicksand','Raleway','Roboto','Rubik','Source Sans 3','Work Sans'];
+const GOOGLE_SERIF = new Set(['Bodoni Moda','Cormorant Garamond','EB Garamond','Libre Baskerville','Lora','Merriweather','Playfair Display','PT Serif']);
+const FB_SANS = "Arial,Helvetica,sans-serif";
+const FB_SERIF = "Georgia,'Times New Roman',serif";
+// common brand fonts that aren't licensed for web -> nearest approved lookalike
+const FONT_ALIASES = {'helvetica neue':'Helvetica','helveticaneue':'Helvetica','times':'Times New Roman','sans-serif':'Arial','sans serif':'Arial','serif':'Georgia','proxima nova':'Montserrat','gotham':'Montserrat','futura':'Poppins','avenir':'Nunito','avenir next':'Nunito','brandon grotesque':'Poppins','gill sans':'Lato','century gothic':'Poppins','didot':'Playfair Display','bodoni':'Bodoni Moda','bodoni 72':'Bodoni Moda','baskerville':'Libre Baskerville','minion':'PT Serif','minion pro':'PT Serif','myriad':'Open Sans','myriad pro':'Open Sans','calibri':'Open Sans','segoe ui':'Open Sans','segoe':'Open Sans','nexa':'Montserrat','circular':'Manrope','sofia pro':'Mulish','apercu':'Work Sans','freight':'PT Serif','caslon':'Libre Baskerville','trajan':'Cormorant Garamond','din':'Oswald','frutiger':'Open Sans','museo':'Rubik','museo sans':'Rubik'};
+
+function _fontMeta(name){ if(WEBSAFE_FONTS[name]) return {name:name,websafe:true,google:false}; if(GOOGLE_FONTS.indexOf(name)>=0) return {name:name,websafe:false,google:true}; return {name:'Arial',websafe:true,google:false}; }
+function _nearestByChars(key){
+  const all=WEBSAFE_NAMES.concat(GOOGLE_FONTS); let best=null,score=0;
+  all.forEach(f=>{ const lf=f.toLowerCase(); let s=0;
+    if(lf.indexOf(key)>=0||key.indexOf(lf)>=0) s=40+Math.min(lf.length,key.length);
+    else { let i=0; while(i<lf.length&&i<key.length&&lf[i]===key[i]) i++; s=i; }
+    if(s>score){score=s;best=f;} });
+  return score>=3?best:null;
+}
+// resolve any input to an approved font (closest look-alike if not exact)
+function resolveFont(name){
   if(!name) return null;
-  if(name.indexOf(',')>=0) return name;            // user pasted a full stack
-  const clean=name.replace(/^['"]|['"]$/g,'');
-  return "'"+clean+"',Arial,Helvetica,sans-serif";
+  let n=String(name).trim(); if(n.indexOf(',')>=0) n=n.split(',')[0]; n=n.replace(/^['"]|['"]$/g,'').trim();
+  if(!n) return null;
+  const key=n.toLowerCase();
+  const ws=WEBSAFE_NAMES.find(w=>w.toLowerCase()===key); if(ws) return {name:ws,websafe:true,google:false};
+  const g=GOOGLE_FONTS.find(x=>x.toLowerCase()===key); if(g) return {name:g,websafe:false,google:true};
+  if(FONT_ALIASES[key]) return _fontMeta(FONT_ALIASES[key]);
+  const near=_nearestByChars(key); if(near) return _fontMeta(near);
+  return _fontMeta(/(serif|garamond|times|georgia|playfair|baskerville|bodoni|didot|lora|merriweather|roman|caslon)/.test(key)?'Georgia':'Arial');
+}
+function nearestApproved(name){ const m=resolveFont(name); return m?m.name:'Arial'; }
+function fontStack(name){ const m=resolveFont(name); if(!m) return null; if(m.websafe) return WEBSAFE_FONTS[m.name]; return "'"+m.name+"',"+(GOOGLE_SERIF.has(m.name)?FB_SERIF:FB_SANS); }
+function buildStack(name){ return fontStack(name); }
+function setFont(id,val){ const e=document.getElementById(id); if(!e||!val) return; e.value=nearestApproved(val); }
+function fontsInit(){
+  ['headFont','bodyFont'].forEach(id=>{ const sel=document.getElementById(id); if(!sel) return;
+    const cur=sel.getAttribute('data-default')||sel.value||'';
+    sel.innerHTML='<optgroup label="Web-safe \u2014 no import">'+WEBSAFE_NAMES.map(f=>'<option>'+f+'</option>').join('')
+      +'</optgroup><optgroup label="Google Fonts \u2014 auto @import">'+GOOGLE_FONTS.map(f=>'<option>'+f+'</option>').join('')+'</optgroup>';
+    sel.value=nearestApproved(cur);
+  });
+}
+// load selected Google fonts into the tool itself so the live preview is accurate
+function ensureGoogleFontsLoaded(fams){ (fams||[]).forEach(f=>{ const idc='gf-'+f.replace(/[^a-z0-9]/gi,''); if(document.getElementById(idc)) return;
+  const l=document.createElement('link'); l.id=idc; l.rel='stylesheet'; l.href='https://fonts.googleapis.com/css2?family='+f.replace(/ /g,'+')+':wght@300;400;500;600;700&display=swap'; (document.head||document.body).appendChild(l); }); }
+// amenity icons must be self-hosted on Suna S3 (public) or landing pages 403
+function isSunaAsset(u){ return /^https:\/\/suna-template-files\.s3[.-][a-z0-9.-]*amazonaws\.com\//i.test(String(u||'').trim()); }
+// mark colour / icon fields that hold values we won't emit
+function flagFields(){
+  document.querySelectorAll('input[data-t]').forEach(el=>{ el.classList.toggle('bad', !normHex(el.value)); });
+  ['bedIcon','bathIcon','carIcon'].forEach(id=>{ const el=document.getElementById(id); if(!el) return; const val=(el.value||'').trim(); el.classList.toggle('bad', !!val && !isSunaAsset(val)); });
 }
 
 // regions are computed from the baseline's own markers, so swapping in a new
@@ -408,18 +467,20 @@ function setVar(lines, name, value, changed){
 function readState(){
   const v=id=>document.getElementById(id).value.trim();
   const t=k=>document.querySelector('input[data-t="'+k+'"]').value.trim();
+  const col=k=>normHex(t(k))||'';                                   // invalid hex -> '' (skips -> baseline)
+  const icon=id=>{ const u=v(id); return (u && isSunaAsset(u))?u:''; }; // non-Suna / outside link -> '' (skips -> baseline)
   return {
-    primary:t('primary'), secondary:t('secondary'), emailBg:t('emailBg'), contentBg:t('contentBg'),
-    headFont:v('headFont'), headColor:t('headColor'), headWeight:v('headWeight'),
-    bodyFont:v('bodyFont'), bodyColor:t('bodyColor'), bodyWeight:v('bodyWeight'),
-    logoBg:t('logoBg'), logoW:v('logoW')+'px', logoAlign:v('logoAlign'),
-    btnBg:t('btnBg'), btnColor:t('btnColor'), btnRadius:v('btnRadius')+'px',
-    titleBg:t('titleBg'), titleColor:t('titleColor'),
-    factsheetBg:t('factsheetBg'), factsheetColor:t('factsheetColor'),
-    footerBg:t('footerBg'), footerColor:t('footerColor'),
+    primary:col('primary'), secondary:col('secondary'), emailBg:col('emailBg'), contentBg:col('contentBg'),
+    headFont:v('headFont'), headColor:col('headColor'), headWeight:v('headWeight'),
+    bodyFont:v('bodyFont'), bodyColor:col('bodyColor'), bodyWeight:v('bodyWeight'),
+    logoBg:col('logoBg'), logoW:v('logoW')+'px', logoAlign:v('logoAlign'),
+    btnBg:col('btnBg'), btnColor:col('btnColor'), btnRadius:v('btnRadius')+'px',
+    titleBg:col('titleBg'), titleColor:col('titleColor'),
+    factsheetBg:col('factsheetBg'), factsheetColor:col('factsheetColor'),
+    footerBg:col('footerBg'), footerColor:col('footerColor'),
     footerLinkSize:v('footerLinkSize')+'px', footerLogo:v('footerLogo'),
     footerLogoAlign:v('footerLogoAlign'), footerLogoW:v('footerLogoW')+'px',
-    bedIcon:v('bedIcon'), bathIcon:v('bathIcon'), carIcon:v('carIcon'),
+    bedIcon:icon('bedIcon'), bathIcon:icon('bathIcon'), carIcon:icon('carIcon'),
     clientName:v('clientName')
   };
 }
@@ -494,19 +555,22 @@ function generate(){
   const keys=Object.keys(ov);
   const inner = keys.length ? ['', ...keys.map(k=>'$'+k+': '+ov[k]+';'), ''] : [''];
   const out = (si>=0 && ei>si) ? lines.slice(0,si+1).concat(inner, lines.slice(ei)) : lines;
-  const scss=out.join('\n');
-  return {scss:scss, count:ch.size, lines:scss.split('\n').length, state:s};
+  // Google fonts need an @import at the very top of the SCSS to render; web-safe fonts need nothing.
+  const googFams=[...new Set([resolveFont(s.headFont), resolveFont(s.bodyFont)].filter(m=>m&&m.google).map(m=>m.name))];
+  const imp=googFams.map(f=>"@import url('https://fonts.googleapis.com/css2?family="+f.replace(/ /g,'+')+":wght@300;400;500;600;700&display=swap');").join('\n');
+  const scss=(imp?imp+'\n\n\n':'')+out.join('\n');
+  return {scss:scss, count:ch.size, lines:scss.split('\n').length, state:s, googFams:googFams};
 }
 
 let lastScss="";
 function refresh(){
   const r=generate(); lastScss=r.scss;
-  // highlight only the lines we changed (cheap: lines starting with a changed $var would need tracking;
-  // simpler: show plain, escape HTML)
+  ensureGoogleFontsLoaded(r.googFams);   // so the live preview renders the chosen Google fonts
   document.getElementById('scssOut').textContent=r.scss;
   document.getElementById('count').textContent=r.count+' variables branded';
   document.getElementById('lineInfo').textContent=r.lines+' lines';
   renderPreview(r.state);
+  flagFields();                          // mark any colour/icon field we couldn't accept
 }
 
 // ---- sample data ----
@@ -787,8 +851,8 @@ function applyExtraction(d){
   setColorField('footerBg', d.primary);
   setColorField('headColor', d.primary);
   // fonts (reject leaked CSS variables / junk)
-  if(d.headFont && !isJunkFont(d.headFont)) setField('headFont', d.headFont);
-  if(d.bodyFont && !isJunkFont(d.bodyFont)) setField('bodyFont', d.bodyFont);
+  if(d.headFont && !isJunkFont(d.headFont)) setFont('headFont', d.headFont);
+  if(d.bodyFont && !isJunkFont(d.bodyFont)) setFont('bodyFont', d.bodyFont);
   // client name from site
   if(d.siteName) setField('clientName', d.siteName.replace(/\s*[|\-–].*$/,'').trim());
   // logo
@@ -816,8 +880,8 @@ function applyExtraction(d){
     const chip=document.createElement('button'); chip.type='button'; chip.textContent=f;
     chip.style.cssText='font-size:11px;padding:5px 9px;border:1px solid var(--line);border-radius:14px;background:#fff;cursor:pointer';
     chip.title='Click = heading font, right-click = body font';
-    chip.onclick=()=>{ setField('headFont',f); refresh(); };
-    chip.oncontextmenu=(e)=>{ e.preventDefault(); setField('bodyFont',f); refresh(); };
+    chip.onclick=()=>{ setFont('headFont',f); refresh(); };
+    chip.oncontextmenu=(e)=>{ e.preventDefault(); setFont('bodyFont',f); refresh(); };
     fr.appendChild(chip);
   });
   document.getElementById('fontsWrap').style.display=cleanFonts.length?'block':'none';
@@ -907,7 +971,7 @@ function applyQuickEdit(){
     if(!el.font){ showQE("The "+el.label+" font isn't editable here.",false); return; }
     let name=raw.replace(new RegExp(elKey,'i'),'').replace(/\b(font|typeface|family|heading|headings|body|to|the|set|make|change|use|please|for|in|as)\b/gi,'').replace(/["',.]/g,'').trim();
     if(!name){ showQE("Which font? e.g. \u201cheading font Montserrat\u201d.",false); return; }
-    setField(el.font,name); showQE("Set "+el.label+" font \u2192 "+name+".",true);
+    setFont(el.font,name); const rf=nearestApproved(name); showQE("Set "+el.label+" font \u2192 "+rf+(rf.toLowerCase()!==name.toLowerCase()?" (closest to \u201c"+name+"\u201d)":"")+".",true);
   } else if(prop==='radius'){
     let v=/\b(square|sharp)\b/.test(t)?0:8; const nm=t.match(/(\d+)\s*px/); if(nm) v=parseInt(nm[1]); if(/\bpill\b/.test(t)) v=30;
     setRange('btnRadius',v); showQE("Set button corner radius \u2192 "+v+"px.",true);
@@ -1069,7 +1133,9 @@ document.getElementById('footerLogoW').addEventListener('input',e=>{document.get
 document.getElementById('tmplType').addEventListener('change',refresh);
 document.getElementById('siteUrl').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); analyzeWebsite(); } });
 document.getElementById('controls').addEventListener('input',refresh);
+document.getElementById('controls').addEventListener('change',refresh);   // <select> font/weight/align changes
 
+fontsInit();
 refresh();
 switchModule();
 </script>
