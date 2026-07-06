@@ -79,37 +79,75 @@ function isNeutral(hex) {
   return sat(hex) < 0.12 || lum(hex) > 240 || lum(hex) < 12;
 }
 
-function extractColours(cssText, themeColor, inlineColours) {
+// Colours that ship as framework / CMS defaults — almost never the real brand.
+// A frequency counter over the stylesheet will over-count these (they're referenced
+// by every default button/link rule), so they must not win primary/secondary unless
+// there is genuinely nothing else to go on.
+const FRAMEWORK_DEFAULTS = new Set([
+  '#1779ba', '#14679e', '#126195', '#1468a0',            // Zurb Foundation
+  '#007bff', '#0069d9', '#0062cc',                       // Bootstrap 4
+  '#0d6efd', '#0b5ed7', '#0a58ca',                       // Bootstrap 5
+  '#337ab7', '#2e6da4', '#286090', '#23527c', '#428bca', // Bootstrap 3
+  '#0056b3',                                             // Bootstrap link
+  '#0073aa', '#007cba', '#2271b1', '#135e96', '#0071a1', // WordPress / Gutenberg
+  '#3273dc', '#485fc7', '#00d1b2',                       // Bulma
+  '#1eaedb', '#0fa0ce',                                  // Skeleton
+  '#0000ee', '#0645ad', '#1a0dab', '#0066cc',            // generic default link blues
+]);
+function isFrameworkDefault(hex) { return !!hex && FRAMEWORK_DEFAULTS.has(hex); }
+
+function extractColours(cssText, signals) {
+  signals = signals || {};
+  const inlineColours = signals.inlineColours || [];
+  // declared brand signals — trusted over CSS frequency
+  const themeHex = (function () { const h = normHex(signals.themeColor); return h && !isNeutral(h) ? h : null; })();
+  const tileHex = (function () { const h = normHex(signals.tileColor); return h && !isNeutral(h) ? h : null; })();
+  const logoColours = (signals.logoColours || [])
+    .map(normHex).filter((h) => h && !isNeutral(h) && !isFrameworkDefault(h));
+
   const counts = new Map();
   const bump = (raw, weight) => {
     const h = normHex(raw);
     if (!h) return;
     counts.set(h, (counts.get(h) || 0) + weight);
   };
-
-  // theme-color is a strong brand signal
-  if (themeColor) bump(themeColor, 40);
   // colours from inline style attributes (often header/buttons) get a small boost
   inlineColours.forEach((c) => bump(c, 3));
-
   // all colours in the CSS text
   const re = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)/g;
   let m;
   while ((m = re.exec(cssText))) bump(m[0], 1);
 
-  // separate brand-ish (saturated, mid-tone) from neutrals
-  const all = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const brandish = all.filter(([h]) => !isNeutral(h)).map(([h]) => h);
-  const palette = all.map(([h]) => h).slice(0, 14);
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
+  const brandReal = ranked.filter((h) => !isNeutral(h) && !isFrameworkDefault(h)); // genuine brand-ish colours
+  const brandFallback = ranked.filter((h) => !isNeutral(h) && isFrameworkDefault(h)); // last resort only
 
-  const primary = brandish[0] || all[0]?.[0] || '#333333';
-  // secondary: next brand colour that's visibly different from primary
+  // A declared brand signal beats raw CSS frequency. This is the key fix: a framework
+  // default (e.g. Foundation's #1779ba) is often the most-repeated colour in the CSS,
+  // but the site's own theme-color / tile-color / logo is what the brand actually is.
+  const primary = themeHex || tileHex || logoColours[0] || brandReal[0] || brandFallback[0] || ranked[0] || '#333333';
+
   let secondary = '#666666';
-  for (const h of brandish.slice(1)) {
-    if (Math.abs(lum(h) - lum(primary)) > 25 || h !== primary) { secondary = h; break; }
-  }
+  const secondaryPool = [tileHex, logoColours[0], logoColours[1], ...brandReal, themeHex];
+  for (const h of secondaryPool) { if (h && h !== primary) { secondary = h; break; } }
 
-  return { primary, secondary, palette, themeColor: normHex(themeColor) };
+  // palette: signals + real brand colours first, then neutrals; framework defaults dropped entirely
+  const palette = []; const seen = new Set();
+  const pushUnique = (h) => { if (h && !seen.has(h)) { seen.add(h); palette.push(h); } };
+  [primary, secondary, themeHex, tileHex].forEach(pushUnique);
+  logoColours.forEach(pushUnique);
+  brandReal.forEach(pushUnique);
+  ranked.forEach((h) => { if (!isFrameworkDefault(h)) pushUnique(h); });
+
+  return {
+    primary,
+    secondary,
+    palette: palette.slice(0, 14),
+    themeColor: themeHex,
+    tileColor: tileHex,
+    logoColours,
+    filteredFrameworkColours: brandFallback.filter((h) => h !== primary),
+  };
 }
 
 // ---------- font helpers ----------
@@ -118,7 +156,19 @@ function cleanFamily(decl) {
   const first = decl.split(',')[0].trim().replace(/^['"]|['"]$/g, '');
   const generic = ['inherit', 'initial', 'unset', 'sans-serif', 'serif', 'monospace', 'system-ui', '-apple-system', 'blinkmacsystemfont'];
   if (!first || generic.includes(first.toLowerCase())) return null;
+  if (/[:{}();]/.test(first)) return null;        // CSS property leakage, e.g. "object-fit: cover"
+  if (first.length > 40 || first.length < 2) return null;
   return first;
+}
+
+// turn "playfair-display" into "Playfair Display", preferring a proper-cased variant if one exists
+function prettyFont(name, pool) {
+  if (!name) return name;
+  const norm = name.toLowerCase().replace(/[-_]+/g, ' ').trim();
+  const match = (pool || []).find((f) => f.toLowerCase().replace(/[-_]+/g, ' ').trim() === norm && /[A-Z]|\s/.test(f));
+  if (match) return match;
+  if (/^[a-z0-9-]+$/.test(name)) return name.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  return name;
 }
 
 function extractFonts($, cssText) {
@@ -151,22 +201,34 @@ function extractFonts($, cssText) {
     if (!bodyFont && /(^|[,\s])(body|html|p|\.body)([,\s{]|$)/.test(selector)) bodyFont = fam;
   }
 
-  const uniq = [...new Set([...google, ...all])];
+  const pool = [...new Set([...google, ...all])];
   // fallbacks
-  if (!headFont) headFont = google[0] || uniq[0] || null;
-  if (!bodyFont) bodyFont = google[1] || google[0] || uniq.find((f) => f !== headFont) || uniq[0] || null;
+  if (!headFont) headFont = google[0] || pool[0] || null;
+  if (!bodyFont) bodyFont = google[1] || google[0] || pool.find((f) => f !== headFont) || pool[0] || null;
 
-  return { headFont, bodyFont, googleFonts: [...new Set(google)], allFonts: uniq.slice(0, 12) };
+  headFont = prettyFont(headFont, pool);
+  bodyFont = prettyFont(bodyFont, pool);
+
+  // dedupe allFonts case-insensitively, preferring the proper-cased/spaced variant
+  const seen = new Map();
+  pool.map((f) => prettyFont(f, pool)).forEach((f) => {
+    const k = f.toLowerCase();
+    if (!seen.has(k)) seen.set(k, f);
+  });
+
+  return { headFont, bodyFont, googleFonts: [...new Set(google)], allFonts: [...seen.values()].slice(0, 12) };
 }
 
 // ---------- logo helpers ----------
-function extractLogos($, base) {
+function extractLogos($, base, cssText) {
   const cands = [];
   const add = (u, score) => {
     if (!u) return;
     try {
       const abs = new URL(u, base).href;
       if (/^data:/.test(abs)) return;
+      if (/\.svg(\?|$)/i.test(abs)) score += 45;                                   // real logos are often SVG
+      if (/(_\d{2,4}x\d{2,4}_|[-/]crop|1200x630|og[-_]?image|social|share|hero|banner)/i.test(abs)) score -= 55; // share-card / hero, not a logo
       cands.push({ url: abs, score });
     } catch (e) {}
   };
@@ -177,13 +239,37 @@ function extractLogos($, base) {
     const hay = [$(el).attr('src'), $(el).attr('alt'), $(el).attr('class'), $(el).attr('id')].join(' ');
     if (/logo|brand/i.test(hay)) add($(el).attr('src') || $(el).attr('data-src'), 75 - i);
   });
-  $('meta[property="og:logo"], meta[property="og:image"]').each((i, el) => add($(el).attr('content'), 45));
-  $('link[rel="apple-touch-icon"]').each((i, el) => add($(el).attr('href'), 35));
-  $('link[rel~="icon"]').each((i, el) => add($(el).attr('href'), 25));
+  // CSS background-image logos (common when the header logo isn't an <img>)
+  const bgRe = /\.logo[^{}]*\{[^{}]*background(?:-image)?\s*:[^{}]*url\(([^)]+)\)/gi;
+  let bm;
+  while ((bm = bgRe.exec(cssText || ''))) add(bm[1].replace(/['"]/g, '').trim(), 70);
+  $('[class*="logo" i], [id*="logo" i]').each((i, el) => {
+    const st = $(el).attr('style') || '';
+    const u = st.match(/url\(([^)]+)\)/i);
+    if (u) add(u[1].replace(/['"]/g, '').trim(), 65);
+  });
+  $('meta[property="og:logo"]').each((i, el) => add($(el).attr('content'), 60));
+  $('link[rel="apple-touch-icon"]').each((i, el) => add($(el).attr('href'), 40));
+  $('meta[property="og:image"]').each((i, el) => add($(el).attr('content'), 18)); // usually a share card, low
+  $('link[rel~="icon"]').each((i, el) => add($(el).attr('href'), 22));
 
   const best = new Map();
   cands.forEach((c) => { if (!best.has(c.url) || best.get(c.url) < c.score) best.set(c.url, c.score); });
-  return [...best.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]).slice(0, 6);
+  return [...best.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]).slice(0, 8);
+}
+
+// pull brand colours straight out of an SVG logo. Positive logos carry the brand
+// colour; reverse/white logos won't — which is fine, theme-color covers those.
+async function fetchLogoColours(logoUrl) {
+  if (!logoUrl || !/\.svg(\?|$)/i.test(logoUrl)) return [];
+  try {
+    const r = await fetchText(logoUrl);
+    if (!/svg/i.test(r.contentType || '') && !/<svg/i.test(r.text)) return [];
+    const hits = (r.text.match(/#[0-9a-fA-F]{3,8}\b/g) || []).concat(r.text.match(/rgba?\([^)]+\)/g) || []);
+    const counts = new Map();
+    hits.forEach((c) => { const h = normHex(c); if (h) counts.set(h, (counts.get(h) || 0) + 1); });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
+  } catch (e) { return []; }
 }
 
 // ---------- main handler ----------
@@ -234,9 +320,14 @@ module.exports = async (req, res) => {
     });
 
     const themeColor = $('meta[name="theme-color"]').attr('content') || null;
-    const colours = extractColours(css, themeColor, inlineColours);
+    const tileColor = $('meta[name="msapplication-TileColor"]').attr('content')
+      || $('meta[name="msapplication-navbutton-color"]').attr('content') || null;
     const fonts = extractFonts($, css);
-    const logos = extractLogos($, base);
+    const logos = extractLogos($, base, css);
+    // best-effort: read brand colours from the first SVG logo candidate
+    const svgLogo = logos.find((u) => /\.svg(\?|$)/i.test(u));
+    const logoColours = await fetchLogoColours(svgLogo);
+    const colours = extractColours(css, { themeColor, tileColor, logoColours, inlineColours });
 
     const title = ($('title').first().text() || '').trim().slice(0, 80);
     const siteName = $('meta[property="og:site_name"]').attr('content') || title || parsed.hostname;
@@ -249,7 +340,9 @@ module.exports = async (req, res) => {
       primary: colours.primary,
       secondary: colours.secondary,
       themeColor: colours.themeColor,
+      tileColor: colours.tileColor,
       palette: colours.palette,
+      filteredFrameworkColours: colours.filteredFrameworkColours,
       headFont: fonts.headFont,
       bodyFont: fonts.bodyFont,
       googleFonts: fonts.googleFonts,
@@ -258,7 +351,8 @@ module.exports = async (req, res) => {
       logoCandidates: logos,
       notes: [
         'Best-guess extraction — review and correct before generating SCSS.',
-        'Colours are guessed from CSS frequency; the real brand primary may be lower in the palette.',
+        'Primary prefers the site theme-color / tile-color / logo colour over raw CSS frequency.',
+        'Known framework defaults (e.g. Foundation #1779ba, Bootstrap blues) are filtered out of the brand colours.',
         'Logo is for reference/upload — it is not stored in the SCSS.',
       ],
     });
@@ -270,3 +364,6 @@ module.exports = async (req, res) => {
     });
   }
 };
+
+// ---------- test hooks (safe for Vercel: attaching props to the handler export) ----------
+module.exports._internal = { extractColours, normHex, isFrameworkDefault, isNeutral };
