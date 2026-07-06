@@ -30,6 +30,7 @@
   input[type=text]:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
   .colorrow{display:flex;gap:8px;align-items:center}
   input.bad, select.bad, .colorrow input.bad{border-color:#dc2626 !important;background:#fff5f5 !important}
+  input[data-t].armed, .colorrow input[data-t].armed{outline:2px solid #2f6df0 !important;outline-offset:1px;border-color:#2f6df0 !important;background:#f0f6ff !important}
   .colorrow input[type=color]{width:38px;height:34px;padding:0;border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer}
   .colorrow input[type=text]{flex:1}
   .rangerow{display:flex;align-items:center;gap:10px}
@@ -116,8 +117,9 @@
         <div class="field"><button class="btn primary" type="button" id="analyzeBtn" style="width:100%" onclick="analyzeWebsite()">Analyze website</button></div>
         <div class="field" id="analyzeStatus" style="display:none;font-size:12px;margin-bottom:0"></div>
         <div class="field" id="paletteWrap" style="display:none;margin-bottom:0">
-          <label>Detected colours <span class="hint">click = primary, right-click = secondary</span></label>
+          <label>Detected colours <span class="hint">click a colour field below, then a swatch &mdash; or just click = primary, right-click = secondary</span></label>
           <div id="paletteRow" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          <div id="armTip" class="hint" style="display:none;margin-top:6px;font-size:11px;color:#2f6df0"></div>
         </div>
         <div class="field" id="fontsWrap" style="display:none;margin-bottom:0">
           <label>Detected fonts <span class="hint">click to use as heading / body</span></label>
@@ -285,6 +287,7 @@
         <span class="hint" id="lineInfo" style="margin-left:auto;font-size:12px;color:var(--ink-soft)"></span>
       </div>
       <div class="note">Paste this into the client account &rarr; <b>Scss Editor</b>, save, then send a test to yourself. The <code>/*CUSTOM VARIABLE START*/</code> marker is kept intact so the upload won't be rejected.</div>
+      <div id="gfNote" class="note" style="display:none;background:#fff7e8;border-color:#f0c56b;color:#7a5200"></div>
       <pre class="scss" id="scssOut"></pre>
     </div>
 
@@ -331,6 +334,13 @@
       </div>
 
       <div id="modInputs" style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:12px"></div>
+
+      <div id="modPrevWrap" style="margin-bottom:12px">
+        <div class="hint" style="font-size:11px;margin-bottom:5px">Approximate preview &mdash; brand colours &amp; fonts applied, platform tokens shown as sample data. The exact look is set by the client SCSS at send time.</div>
+        <div style="background:#f4f6f9;border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto">
+          <iframe id="modPreview" title="Module preview" style="width:100%;border:0;background:#fff;border-radius:4px;min-height:80px"></iframe>
+        </div>
+      </div>
 
       <div class="scss-actions">
         <button class="btn primary" id="copyModBtn" onclick="copyMod()">Copy module HTML</button>
@@ -555,10 +565,13 @@ function generate(){
   const keys=Object.keys(ov);
   const inner = keys.length ? ['', ...keys.map(k=>'$'+k+': '+ov[k]+';'), ''] : [''];
   const out = (si>=0 && ei>si) ? lines.slice(0,si+1).concat(inner, lines.slice(ei)) : lines;
-  // Google fonts need an @import at the very top of the SCSS to render; web-safe fonts need nothing.
+  // Google fonts must be set up OUTSIDE the SCSS (platform font settings or the email <head>).
+  // The platform strips @import from style.scss, so we name the fonts in a header comment to action instead.
   const googFams=[...new Set([resolveFont(s.headFont), resolveFont(s.bodyFont)].filter(m=>m&&m.google).map(m=>m.name))];
-  const imp=googFams.map(f=>"@import url('https://fonts.googleapis.com/css2?family="+f.replace(/ /g,'+')+":wght@300;400;500;600;700&display=swap');").join('\n');
-  const scss=(imp?imp+'\n\n\n':'')+out.join('\n');
+  const note=googFams.length
+    ? '/* Google fonts used: '+googFams.join(', ')+'\n   Add these in the platform font settings or the email <head>. Do not import fonts inside this SCSS file. */'
+    : '';
+  const scss=(note?note+'\n\n\n':'')+out.join('\n');
   return {scss:scss, count:ch.size, lines:scss.split('\n').length, state:s, googFams:googFams};
 }
 
@@ -567,10 +580,17 @@ function refresh(){
   const r=generate(); lastScss=r.scss;
   ensureGoogleFontsLoaded(r.googFams);   // so the live preview renders the chosen Google fonts
   document.getElementById('scssOut').textContent=r.scss;
+  const gf=document.getElementById('gfNote');
+  if(gf){
+    if(r.googFams&&r.googFams.length){ gf.style.display='block'; gf.innerHTML='<b>Google fonts used:</b> '+r.googFams.join(', ')+'. Set these up in the platform font settings or the email &lt;head&gt; \u2014 they are intentionally <b>not</b> imported inside the SCSS (the platform strips font imports from style.scss).'; }
+    else { gf.style.display='none'; }
+  }
   document.getElementById('count').textContent=r.count+' variables branded';
   document.getElementById('lineInfo').textContent=r.lines+' lines';
   renderPreview(r.state);
   flagFields();                          // mark any colour/icon field we couldn't accept
+  const mp=document.getElementById('paneMods');
+  if(mp&&mp.classList.contains('active')&&typeof renderModule==='function') renderModule();  // keep module preview brand-synced
 }
 
 // ---- sample data ----
@@ -830,13 +850,36 @@ function showPreview(url){
   document.getElementById('logoCandsHint').style.display='none';
   EXTRACTED.logo=null; // uploaded image is not a hosted URL
 }
+// ---- click-to-target: arm a colour field in the sidebar, then click a detected swatch ----
+let ARMED_COLOR=null;
+const COLOR_LABELS={primary:'Primary colour',secondary:'Secondary colour',emailBg:'Email background',contentBg:'Content background',headColor:'Heading colour',bodyColor:'Body text colour',logoBg:'Logo background',btnBg:'Button background',btnColor:'Button text',titleBg:'Title bar background',titleColor:'Title bar text',factsheetBg:'Factsheet background',factsheetColor:'Factsheet text',footerBg:'Footer background',footerColor:'Footer text'};
+function armColorField(key){
+  if(!key||!COLOR_LABELS[key]) return;
+  ARMED_COLOR=key;
+  document.querySelectorAll('input[data-t]').forEach(el=>el.classList.toggle('armed', el.getAttribute('data-t')===key));
+  const tip=document.getElementById('armTip');
+  if(tip){
+    tip.style.display='block';
+    tip.innerHTML='Targeting <b>'+COLOR_LABELS[key]+'</b> \u2014 click a swatch to apply. <a href="#" id="armClear" style="color:#2f6df0">clear</a>';
+    const c=document.getElementById('armClear'); if(c) c.onclick=(e)=>{e.preventDefault();disarmColorField();};
+  }
+}
+function disarmColorField(){
+  ARMED_COLOR=null;
+  document.querySelectorAll('input[data-t].armed').forEach(el=>el.classList.remove('armed'));
+  const tip=document.getElementById('armTip'); if(tip) tip.style.display='none';
+}
 function renderPalette(colors, append){
   const pr=document.getElementById('paletteRow'); if(!append) pr.innerHTML='';
   (colors||[]).forEach(hex=>{
     const sw=document.createElement('button'); sw.type='button';
-    sw.title=hex+'  (click = primary, right-click = secondary)';
+    sw.title=hex+(ARMED_COLOR?('  \u2192 '+(COLOR_LABELS[ARMED_COLOR]||ARMED_COLOR)):'  (click = primary, right-click = secondary)');
     sw.style.cssText='width:30px;height:30px;border-radius:6px;border:1px solid #ccc;cursor:pointer;background:'+hex;
-    sw.onclick=()=>{ setColorField('primary',hex); setColorField('btnBg',hex); setColorField('footerBg',hex); refresh(); };
+    sw.onclick=()=>{
+      if(ARMED_COLOR){ setColorField(ARMED_COLOR,hex); }
+      else { setColorField('primary',hex); setColorField('btnBg',hex); setColorField('footerBg',hex); }
+      refresh();
+    };
     sw.oncontextmenu=(e)=>{ e.preventDefault(); setColorField('secondary',hex); refresh(); };
     pr.appendChild(sw);
   });
@@ -999,6 +1042,7 @@ function showTab(which){
   document.getElementById('paneScss').classList.toggle('active',which==='scss');
   document.getElementById('panePrev').classList.toggle('active',which==='prev');
   document.getElementById('paneMods').classList.toggle('active',which==='mods');
+  if(which==='mods'&&typeof renderModule==='function') renderModule();
 }
 
 // ---- custom module generators (canonical-based, per irealty-module-html skill) ----
@@ -1072,6 +1116,79 @@ function genLogoMenu(){
   return CANON_LOGO.replace(/<a href="\[client-website\]"[\s\S]*?<\/a>/, menu);
 }
 
+// ---- module preview (approximate render: sample data + brand shim in a sandboxed iframe) ----
+const MODP_LOGO='data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="54"><rect width="200" height="54" fill="#dfe4ea"/><text x="100" y="33" font-family="Arial" font-size="15" fill="#8a94a0" text-anchor="middle">LOGO</text></svg>');
+const MODP_IMG='data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="220"><rect width="640" height="220" fill="#e3e8ee"/><text x="320" y="118" font-family="Arial" font-size="18" fill="#9aa4b0" text-anchor="middle">IMAGE</text></svg>');
+const MODP_PHOTO='data:image/svg+xml;utf8,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240"><rect width="240" height="240" fill="#e3e8ee"/><text x="120" y="128" font-family="Arial" font-size="16" fill="#9aa4b0" text-anchor="middle">PHOTO</text></svg>');
+
+function modPreviewHtml(raw, s){
+  let h=raw;
+  // value-bearing SYSTEMFIELD tokens -> sample content (before stripping the directive comments)
+  h=h.replace(/<!--SYSTEMFIELD="IMAGE"[^>]*-->/g, MODP_IMG)
+     .replace(/<!--SYSTEMFIELD="URL"-->/g, '#')
+     .replace(/<!--SYSTEMFIELD="TITLE"-->/g, 'Sample link')
+     .replace(/<!--SYSTEMFIELD="LEADER"-->/g, 'Sample supporting text for this section.')
+     .replace(/<!--SYSTEMFIELD="[^"]*"[^>]*-->/g, '');
+  h=h.replace(/<!--BRANDLOGO-->/g, EXTRACTED.logo || MODP_LOGO)
+     .replace(/<!--ALIGN-->/g, s.logoAlign||'left');
+  // strip every remaining platform directive comment (SYSTEM, HIDE, CONTENT, ROW, SPACE, labels)
+  h=h.replace(/<!--[\s\S]*?-->/g, '');
+  // bracket tokens -> sample data
+  const map={
+    '[client-website]':'#','[client-name]':s.clientName||'Client','[client-address]':'123 Sample St, Brisbane QLD 4000',
+    '[client-phone]':'(07) 3000 0000','[client-email]':'hello@client.com.au',
+    '[url-sendfriend]':'#','[url-subscribe]':'#','[url-unsubscribe]':'#','[url-emailout]':'#','[subscriber-email]':'subscriber@example.com',
+    '[factsheet-link]':'#','[factsheet-title]':'Suburb Report',
+    '[sicon-url]':'#','[sicon-image]':'https://s3.ap-southeast-2.amazonaws.com/cdn.irealty.com.au/global/s-icons/f.png',
+    '[smartAgent-photo-url]':MODP_PHOTO,'[smartAgent-firstname]':'Jamie','[smartAgent-lastname]':'Nguyen',
+    '[smartAgent-title]':'Sales Associate','[smartAgent-mobile]':'0400 000 000','[smartAgent-email]':'jamie@client.com.au',
+    '[smartAgent-field-facebook]':'#','[smartAgent-field-twitter]':'#','[smartAgent-field-linkedin]':'#','[smartAgent-field-youtube]':'#','[smartAgent-field-instagram]':'#'
+  };
+  for(const k in map){ h=h.split(k).join(map[k]); }
+  return h;
+}
+
+function modPreviewCss(s){
+  const body=buildStack(s.bodyFont)||'Arial,Helvetica,sans-serif';
+  const head=buildStack(s.headFont)||body;
+  const contentBg=s.contentBg||'#ffffff';
+  const btnBg=s.btnBg||s.primary||'#333333';
+  const btnColor=s.btnColor||'#ffffff';
+  const btnRadius=s.btnRadius||'0px';
+  return [
+    '*{box-sizing:border-box}',
+    'body{margin:0;padding:14px;font-family:'+body+';color:'+(s.bodyColor||'#333')+';background:'+(s.emailBg||'#f2f5f7')+'}',
+    'table{border-collapse:collapse;width:100%}td{padding:0}',
+    'img{max-width:100%;display:block;border:0}',
+    'a{color:'+(s.primary||'#333')+';text-decoration:none}',
+    '[class*="col-"]{display:table-cell;vertical-align:middle}',
+    '.container{background:'+contentBg+'}.container-pad{padding:20px}.content{background:'+contentBg+'}.inner-pad{padding:16px}',
+    '.column-spacer{width:16px}.repeat-spacing{height:16px;display:block}',
+    '.logo .content,.logo .container-pad{background:'+(s.logoBg||'#fff')+';text-align:'+(s.logoAlign||'left')+'}',
+    '.logo img{width:'+(s.logoW||'200px')+';max-width:100%;display:inline-block}',
+    '.button td,.cta-button-section .button td,.link-table .button td{background:'+btnBg+';border-radius:'+btnRadius+';padding:10px 24px;text-align:center}',
+    '.button a,.link-table a{color:'+btnColor+';font-family:'+body+';font-weight:600}',
+    '.factsheet .content{background:'+(s.factsheetBg||contentBg)+'}.factsheet a{color:'+(s.factsheetColor||s.primary||'#333')+'}',
+    '.social-media .container-pad{text-align:center}.sicon{display:inline-block}.sicon td{padding-right:10px}.sicon img{width:32px;display:inline-block}',
+    '.contact .name{font-family:'+head+';font-size:20px;color:'+(s.headColor||s.primary||'#333')+';font-weight:'+(s.headWeight||'600')+'}',
+    '.contact .title,.contact .mob,.contact .mail{font-size:13px;color:'+(s.bodyColor||'#333')+'}.contact .mob a,.contact .mail a{color:'+(s.bodyColor||'#333')+'}',
+    '.contact .agent-image img{width:100%}.contact .column-width{display:inline-block;vertical-align:top;width:46%}',
+    '.column{display:table-cell;vertical-align:top}',
+    '.footer .container{background:'+(s.footerBg||s.primary||'#333')+'}',
+    '.footer,.footer a,.footer .details,.footer .details a,.footer .links a,.footer .sent-to,.footer .sent-to a{color:'+(s.footerColor||'#fff')+'}',
+    '.footer .links a{font-size:'+(s.footerLinkSize||'14px')+';text-transform:uppercase}.footer .details{text-align:right}.footer .logo img{max-width:180px}',
+    '.online-banner{display:none}'
+  ].join('\n');
+}
+
+function renderModulePreview(html){
+  const fr=document.getElementById('modPreview'); if(!fr) return;
+  const s=readState();
+  const doc='<!doctype html><html><head><meta charset="utf-8"><style>'+modPreviewCss(s)+'</style></head><body>'+modPreviewHtml(html,s)+'</body></html>';
+  fr.onload=()=>{ try{ const d=fr.contentDocument; if(d&&d.body){ fr.style.height=Math.min(1400,d.body.scrollHeight+8)+'px'; } }catch(e){} };
+  fr.srcdoc=doc;
+}
+
 function renderModule(){
   const t=document.getElementById('modType').value;
   let html='', note='';
@@ -1099,6 +1216,7 @@ function renderModule(){
   document.getElementById('modOut').textContent=html;
   document.getElementById('modName').textContent=note;
   lastMod=html;
+  renderModulePreview(html);
 }
 function copyMod(){
   navigator.clipboard.writeText(lastMod).then(()=>{const b=document.getElementById('copyModBtn');b.textContent='Copied \u2713';b.classList.add('copied');setTimeout(()=>{b.textContent='Copy module HTML';b.classList.remove('copied');},1600);}).catch(()=>alert('Copy blocked \u2014 select the HTML and copy manually.'));
@@ -1134,6 +1252,11 @@ document.getElementById('tmplType').addEventListener('change',refresh);
 document.getElementById('siteUrl').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); analyzeWebsite(); } });
 document.getElementById('controls').addEventListener('input',refresh);
 document.getElementById('controls').addEventListener('change',refresh);   // <select> font/weight/align changes
+document.getElementById('controls').addEventListener('focusin',e=>{
+  const el=e.target;
+  if(el&&el.matches&&el.matches('input[data-t]')) armColorField(el.getAttribute('data-t'));
+  else if(el&&el.matches&&el.matches('input[data-c]')) armColorField(el.getAttribute('data-c'));
+});
 
 fontsInit();
 refresh();
