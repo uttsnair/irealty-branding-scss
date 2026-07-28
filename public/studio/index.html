@@ -634,28 +634,58 @@ function cta(s,h,btn){
 }
 function title(t){return '<div class="nl-title">'+t+'</div>';}
 
-/* ---- stock imagery (Unsplash Source — free, no key required) ---- */
-/* Curated Australian-first keyword tags per placeholder category. Deterministic sig=hash(seed)
-   so the same client sees the same images across refreshes; changing client name / seed cycles them. */
-const _STOCK_KW={
-  hero:      'australia,property,cityscape',
-  hero_city: 'sydney,melbourne,brisbane,skyline',
-  property:  'australia,house,exterior',
-  property_alt:'queenslander,cottage,weatherboard',
-  interior:  'interior,kitchen,livingroom',
-  article:   'newspaper,keys,real-estate',
-  row:       'house,exterior,facade',
-  sold:      'sold,sign,australia,house',
-  auction:   'auction,gavel,keys',
-  cta:       'home,welcome,australia',
-  inspection:'openhouse,front-door,keys',
+/* ---- stock imagery (direct Unsplash CDN — free, no key required, verified working) ---- */
+/* Curated pools per category. Deterministic hash(seed) picks a photo, so the same client
+   sees the same images across refreshes; changing client name / seed rotates them.
+   All IDs are free-to-use under the Unsplash License. */
+const _STOCK_POOLS={
+  hero: [ // cityscapes, wide open, sky
+    '1506905925346-21bda4d32df4','1493809842364-78817add7ffb','1524293581917-878a6d017c71',
+    '1523482580672-f109ba8cb9be','1512699355324-f07e3106dae5','1518791841217-8f162f1e1131',
+    '1450101499163-c8848c66ca85',
+  ],
+  property: [ // exterior homes, mostly Australian style
+    '1568605114967-8130f3a36994','1580587771525-78b9dba3b914','1613490493576-7fde63acd811',
+    '1512917774080-9991f1c4c750','1564013799919-ab600027ffc6','1523217582562-09d0def993a6',
+    '1502672260266-1c1ef2d93688','1512918728675-ed5a9ecdebfd','1516156008625-3a9d6067fab5',
+    '1583608205776-bfd35f0d9f83','1502005229762-cf1b2da7c5d6',
+  ],
+  property_alt: [ // more exteriors, for grid variety
+    '1560448204-e02f11c3d0e2','1571939228382-b2f2b585ce15','1560184897-ae75f418493e',
+    '1600585154340-be6161a56a0c','1518791841217-8f162f1e1131',
+  ],
+  interior: [ // kitchens, living rooms
+    '1600566753086-00f18fb6b3ea','1600607687939-ce8a6c25118c','1600210492486-724fe5c67fb0',
+    '1600585154526-990dced4db0d','1616486338812-3dadae4b4ace',
+  ],
+  article: [ // finance, keys, editorial
+    '1554224155-6726b3ff858f','1560518883-ce09059eeffa','1521791136064-7986c2920216',
+  ],
+  row: [ // same pool as property, thumb-cropped
+    '1568605114967-8130f3a36994','1580587771525-78b9dba3b914','1502672260266-1c1ef2d93688',
+    '1523217582562-09d0def993a6','1512917774080-9991f1c4c750',
+  ],
+  sold: [ // exteriors, for SOLD-badge cards
+    '1613490493576-7fde63acd811','1502005229762-cf1b2da7c5d6','1564013799919-ab600027ffc6',
+    '1583608205776-bfd35f0d9f83','1502672260266-1c1ef2d93688',
+  ],
+  auction: [ // property + editorial mix
+    '1600585154340-be6161a56a0c','1554224155-6726b3ff858f','1521791136064-7986c2920216',
+  ],
+  cta: [ // warm home / welcome — for CTA background
+    '1568605114967-8130f3a36994','1580587771525-78b9dba3b914','1512917774080-9991f1c4c750',
+  ],
+  inspection: [ // interior + exterior mix
+    '1600566753086-00f18fb6b3ea','1600607687939-ce8a6c25118c','1616486338812-3dadae4b4ace',
+    '1502672260266-1c1ef2d93688','1580587771525-78b9dba3b914',
+  ],
 };
 function _hash(seed){ let h=7; const s=String(seed||''); for(let i=0;i<s.length;i++){ h=(h*31 + s.charCodeAt(i)) & 0x7fff; } return h; }
 function stockUrl(cat, seed, w, h){
   w = w || 600; h = h || 400;
-  const kw = _STOCK_KW[cat] || _STOCK_KW.property;
-  const sig = _hash(seed + ':' + cat);
-  return 'https://source.unsplash.com/' + w + 'x' + h + '/?' + encodeURIComponent(kw) + '&sig=' + sig;
+  const pool = _STOCK_POOLS[cat] || _STOCK_POOLS.property;
+  const idx = _hash(seed + ':' + cat) % pool.length;
+  return 'https://images.unsplash.com/photo-' + pool[idx] + '?w=' + w + '&h=' + h + '&fit=crop&q=70&auto=format';
 }
 /* returns {style, overlay} — style is a ready-to-drop-in attribute string, overlay adds a legibility gradient for hero/CTA */
 function _bg(s, cat, seed, opts){
