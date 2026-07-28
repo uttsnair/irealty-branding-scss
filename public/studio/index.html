@@ -315,6 +315,13 @@
           </optgroup>
         </select>
       </div>
+      <div class="field" style="max-width:320px;margin-bottom:14px">
+        <label style="font-size:12px;font-weight:600;display:flex;gap:8px;align-items:center;cursor:pointer;user-select:none">
+          <input type="checkbox" id="useStockImages" checked onchange="refresh()" style="width:16px;height:16px;cursor:pointer">
+          <span>Populate previews with stock images</span>
+        </label>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;padding-left:24px">Australia-tailored real-estate photos from Unsplash. Turn off to see the greybox placeholder layout.</div>
+      </div>
       <style id="nlStyle"></style>
       <div class="nl-frame" id="nlFrame">
         <div class="nl-email" id="nlEmail"></div>
@@ -496,7 +503,8 @@ function readState(){
     footerLinkSize:v('footerLinkSize')+'px', footerLogo:v('footerLogo'),
     footerLogoAlign:v('footerLogoAlign'), footerLogoW:v('footerLogoW')+'px',
     bedIcon:icon('bedIcon'), bathIcon:icon('bathIcon'), carIcon:icon('carIcon'),
-    clientName:v('clientName')
+    clientName:v('clientName'),
+    useStock:(document.getElementById('useStockImages')||{}).checked!==false
   };
 }
 
@@ -620,43 +628,114 @@ function foot(s){
   let lg='';
   if(s.footerLogo==='true'){lg='<div class="nl-foot-logo" style="display:block;font-family:'+head+';letter-spacing:2px;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid '+s.footerColor+';text-align:'+s.footerLogoAlign+';font-size:'+Math.max(13,parseInt(s.footerLogoW)/8)+'px">'+((s.clientName||'Client').toUpperCase())+'</div>';}
   return '<div class="nl-foot">'+lg+'<b>'+(s.clientName||'Client')+'</b><br>Brisbane, QLD 4000, Australia<br><a href="#">hello@client.com.au</a><br><br><a href="#">Forward</a><span class="sep">|</span><a href="#">Subscribe</a><span class="sep">|</span><a href="#">Unsubscribe</a><span class="sent">This email was sent to [subscriber-email]</span></div>';}
-function cta(s,h,btn){return '<div class="nl-cta"><h4>'+h+'</h4><a class="nl-btn" href="#">'+btn+'</a></div>';}
+function cta(s,h,btn){
+  const bg = _bg(s,'cta',s.clientName||'cta',{w:600,h:220});
+  return '<div class="nl-cta"'+bg.style+'><h4>'+h+'</h4><a class="nl-btn" href="#">'+btn+'</a></div>';
+}
 function title(t){return '<div class="nl-title">'+t+'</div>';}
+
+/* ---- stock imagery (Unsplash Source — free, no key required) ---- */
+/* Curated Australian-first keyword tags per placeholder category. Deterministic sig=hash(seed)
+   so the same client sees the same images across refreshes; changing client name / seed cycles them. */
+const _STOCK_KW={
+  hero:      'australia,property,cityscape',
+  hero_city: 'sydney,melbourne,brisbane,skyline',
+  property:  'australia,house,exterior',
+  property_alt:'queenslander,cottage,weatherboard',
+  interior:  'interior,kitchen,livingroom',
+  article:   'newspaper,keys,real-estate',
+  row:       'house,exterior,facade',
+  sold:      'sold,sign,australia,house',
+  auction:   'auction,gavel,keys',
+  cta:       'home,welcome,australia',
+  inspection:'openhouse,front-door,keys',
+};
+function _hash(seed){ let h=7; const s=String(seed||''); for(let i=0;i<s.length;i++){ h=(h*31 + s.charCodeAt(i)) & 0x7fff; } return h; }
+function stockUrl(cat, seed, w, h){
+  w = w || 600; h = h || 400;
+  const kw = _STOCK_KW[cat] || _STOCK_KW.property;
+  const sig = _hash(seed + ':' + cat);
+  return 'https://source.unsplash.com/' + w + 'x' + h + '/?' + encodeURIComponent(kw) + '&sig=' + sig;
+}
+/* returns {style, overlay} — style is a ready-to-drop-in attribute string, overlay adds a legibility gradient for hero/CTA */
+function _bg(s, cat, seed, opts){
+  opts = opts || {};
+  if(!s.useStock) return {style:'', overlay:''};
+  const url = stockUrl(cat, seed, opts.w||600, opts.h||400);
+  const overlay = opts.overlay ? 'linear-gradient('+opts.overlay+'),' : '';
+  return {
+    style:' style="background-image:'+overlay+'url('+url+');background-size:cover;background-position:center;background-repeat:no-repeat;color:#fff"',
+    overlay:overlay
+  };
+}
+/* Photo placeholder — respects useStock; falls back to the original grey gradient + label */
+function photo(s, seed, opts){
+  opts = opts || {};
+  const cat = opts.cat || 'property';
+  const label = opts.label || '';
+  const cls = opts.cls || 'nl-photo';
+  const extraStyle = opts.style || '';
+  if(!s.useStock){
+    return '<div class="'+cls+'"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+label+'</div>';
+  }
+  const url = stockUrl(cat, seed, opts.w||600, opts.h||400);
+  const style = 'background-image:url('+url+');background-size:cover;background-position:center;background-repeat:no-repeat'+(extraStyle?';'+extraStyle:'');
+  return '<div class="'+cls+'" style="'+style+'"></div>';
+}
+/* Photo with an absolutely-positioned badge overlay (used for SOLD chips) */
+function photoBadge(s, seed, badgeHtml, opts){
+  opts = opts || {};
+  const cat = opts.cat || 'property';
+  const cls = opts.cls || 'nl-photo';
+  const extraStyle = opts.style || '';
+  if(!s.useStock){
+    return '<div class="'+cls+'"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+badgeHtml+'</div>';
+  }
+  const url = stockUrl(cat, seed, opts.w||600, opts.h||400);
+  const style = 'background-image:url('+url+');background-size:cover;background-position:center;background-repeat:no-repeat'+(extraStyle?';'+extraStyle:'');
+  return '<div class="'+cls+'" style="'+style+'">'+badgeHtml+'</div>';
+}
+/* Hero with cap label + optional dark overlay for text legibility */
+function hero(s, seed, cap){
+  const overlay = s.useStock ? 'rgba(0,0,0,0.35),rgba(0,0,0,0.35)' : '';
+  const bg = _bg(s, 'hero', seed || (s.clientName||'hero'), {w:600, h:200, overlay:overlay});
+  return '<div class="nl-hero"'+bg.style+'><span class="cap">'+cap+'</span></div>';
+}
 
 const TEMPLATES={
   newsletter:s=>logo(s)
-    +'<div class="nl-hero"><span class="cap">Your Monthly Property Update</span></div>'
+    +hero(s, (s.clientName||'')+'-nl-hero', 'Your Monthly Property Update')
     +'<div class="nl-intro">Hi [First Name], here are this month\u2019s standout listings and the latest market news from our team.</div>'
     +title('Featured Property')
-    +'<div class="nl-card"><div class="nl-photo">PROPERTY PHOTO</div><div class="nl-price">'+SAMPLE.feature.price+'</div><div class="nl-addr">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div><div class="nl-leader">'+SAMPLE.feature.lead+'</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">View Property</a></div>'
+    +'<div class="nl-card">'+photo(s,(s.clientName||'')+'-feat',{cat:'property',label:'PROPERTY PHOTO'})+'<div class="nl-price">'+SAMPLE.feature.price+'</div><div class="nl-addr">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div><div class="nl-leader">'+SAMPLE.feature.lead+'</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">View Property</a></div>'
     +title('More Listings')
-    +'<div class="nl-2col">'+SAMPLE.grid.map(p=>'<div class="col"><div class="nl-photo">PHOTO</div><div class="nl-price">'+p.price+'</div><div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-btn" href="#">View</a></div>').join('')+'</div>'
+    +'<div class="nl-2col">'+SAMPLE.grid.map((p,i)=>'<div class="col">'+photo(s,(s.clientName||'')+'-grid-'+i,{cat:(i%2?'property_alt':'property'),label:'PHOTO'})+'<div class="nl-price">'+p.price+'</div><div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-btn" href="#">View</a></div>').join('')+'</div>'
     +title('Market News')
-    +'<div class="nl-article"><div class="nl-photo">ARTICLE IMAGE</div><h3 class="nl-heading">What the latest rate decision means for buyers</h3><p class="nl-body">We break down what the change means for buyers and sellers across the inner-city market, and where the opportunities are heading into spring.</p><a class="nl-link" href="#">Read more &rarr;</a></div>'
+    +'<div class="nl-article">'+photo(s,(s.clientName||'')+'-article',{cat:'article',label:'ARTICLE IMAGE'})+'<h3 class="nl-heading">What the latest rate decision means for buyers</h3><p class="nl-body">We break down what the change means for buyers and sellers across the inner-city market, and where the opportunities are heading into spring.</p><a class="nl-link" href="#">Read more &rarr;</a></div>'
     +cta(s,'Want to know what your property is worth?','Request an Appraisal')+foot(s),
 
   featured:s=>logo(s)
-    +'<div class="nl-hero"><span class="cap">Property of the Week</span></div>'
+    +hero(s, (s.clientName||'')+'-ft-hero', 'Property of the Week')
     +title('Feature Showcase')
-    +'<div class="nl-card"><div class="nl-photo" style="height:240px">FEATURE PHOTO</div><div class="nl-price" style="font-size:24px">'+SAMPLE.feature.price+'</div><div class="nl-addr" style="font-size:17px">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div><div class="nl-leader" style="font-size:13px;opacity:1;margin-bottom:14px">'+SAMPLE.feature.lead+' A rare offering in one of the suburb\u2019s most tightly held pockets.</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">View Property</a><div class="nl-sig" style="margin-top:18px"><b>Listing agent</b> &middot; Jordan Lee &middot; 0400 000 000</div></div>'
+    +'<div class="nl-card">'+photo(s,(s.clientName||'')+'-ft-main',{cat:'property',label:'FEATURE PHOTO',style:'height:240px'})+'<div class="nl-price" style="font-size:24px">'+SAMPLE.feature.price+'</div><div class="nl-addr" style="font-size:17px">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div><div class="nl-leader" style="font-size:13px;opacity:1;margin-bottom:14px">'+SAMPLE.feature.lead+' A rare offering in one of the suburb\u2019s most tightly held pockets.</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">View Property</a><div class="nl-sig" style="margin-top:18px"><b>Listing agent</b> &middot; Jordan Lee &middot; 0400 000 000</div></div>'
     +cta(s,'Arrange a private inspection','Book an Inspection')+foot(s),
 
   sold:s=>logo(s)
     +title('Recently Sold In Your Area')
     +'<div class="nl-intro">Here\u2019s what\u2019s sold near you recently. Curious what yours could achieve?</div>'
-    +SAMPLE.sold.map(p=>'<div class="nl-card" style="padding-top:8px"><div class="nl-photo"><span class="nl-badge">SOLD</span></div><div class="nl-price">'+p.price+'</div><div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div>'+amen(s,p.b,p.ba,p.c)+'</div>').join('')
+    +SAMPLE.sold.map((p,i)=>'<div class="nl-card" style="padding-top:8px">'+photoBadge(s,(s.clientName||'')+'-sold-'+i,'<span class="nl-badge">SOLD</span>',{cat:'sold'})+'<div class="nl-price">'+p.price+'</div><div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div>'+amen(s,p.b,p.ba,p.c)+'</div>').join('')
     +cta(s,'Thinking of selling? Find out what your home is worth','Request an Appraisal')+foot(s),
 
   auctions:s=>logo(s)
-    +'<div class="nl-hero"><span class="cap">Upcoming Auctions</span></div>'
+    +hero(s, (s.clientName||'')+'-au-hero', 'Upcoming Auctions')
     +title('This Weekend\u2019s Auctions')
-    +SAMPLE.auctions.map(p=>'<div class="nl-card"><div class="nl-photo">PROPERTY PHOTO</div><div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div><div class="nl-meta">\uD83D\uDD28 '+p.date+' &middot; '+p.venue+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-btn" href="#">Register to Bid</a></div>').join('')
+    +SAMPLE.auctions.map((p,i)=>'<div class="nl-card">'+photo(s,(s.clientName||'')+'-au-'+i,{cat:(i%2?'auction':'property'),label:'PROPERTY PHOTO'})+'<div class="nl-addr">'+p.addr+'</div><div class="nl-sub">'+p.sub+'</div><div class="nl-meta">\uD83D\uDD28 '+p.date+' &middot; '+p.venue+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-btn" href="#">Register to Bid</a></div>').join('')
     +cta(s,'Can\u2019t attend? Register for remote bidding','Register Now')+foot(s),
 
   inspections:s=>logo(s)
     +title('This Weekend\u2019s Open Homes')
     +'<div class="nl-intro">Plan your Saturday \u2014 here are the open homes happening near you.</div>'
-    +SAMPLE.opens.map(p=>'<div class="nl-row"><div class="nl-row-photo">PHOTO</div><div class="nl-row-body"><div class="nl-addr">'+p.addr+'</div><div class="nl-meta">\uD83D\uDD52 '+p.time+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-link" href="#">Add to calendar &rarr;</a></div></div>').join('')
+    +SAMPLE.opens.map((p,i)=>'<div class="nl-row">'+photo(s,(s.clientName||'')+'-open-'+i,{cat:(i%2?'inspection':'row'),label:'PHOTO',cls:'nl-row-photo',w:200,h:150})+'<div class="nl-row-body"><div class="nl-addr">'+p.addr+'</div><div class="nl-meta">\uD83D\uDD52 '+p.time+'</div>'+amen(s,p.b,p.ba,p.c)+'<a class="nl-link" href="#">Add to calendar &rarr;</a></div></div>').join('')
     +cta(s,'Want a property added to your shortlist?','Talk to an Agent')+foot(s),
 
   suburb:s=>logo(s)
@@ -668,7 +747,7 @@ const TEMPLATES={
 
   form:s=>logo(s)
     +'<div class="nl-intro" style="padding-top:26px"><p style="margin:0 0 12px">Hi [First Name],</p><p style="margin:0 0 12px">Thanks for your enquiry about <b>12 Marine Parade, New Farm</b>. One of our team will be in touch shortly \u2014 in the meantime, here are the details.</p></div>'
-    +'<div class="nl-card" style="padding-top:4px"><div class="nl-photo">PROPERTY PHOTO</div><div class="nl-price">'+SAMPLE.feature.price+'</div><div class="nl-addr">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">Book an Inspection</a></div>'
+    +'<div class="nl-card" style="padding-top:4px">'+photo(s,(s.clientName||'')+'-form-prop',{cat:'property',label:'PROPERTY PHOTO'})+'<div class="nl-price">'+SAMPLE.feature.price+'</div><div class="nl-addr">'+SAMPLE.feature.addr+'</div><div class="nl-sub">'+SAMPLE.feature.sub+'</div>'+amen(s,4,2,2)+'<a class="nl-btn" href="#">Book an Inspection</a></div>'
     +foot(s),
 
   auto:s=>logo(s)
