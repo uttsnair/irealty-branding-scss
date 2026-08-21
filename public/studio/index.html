@@ -376,6 +376,9 @@ const FALLBACK_ORIGIN = "https://irealty-branding-scss.vercel.app";
 function apiBase(){ return location.protocol === 'file:' ? FALLBACK_ORIGIN : ''; }
 // ============================================================
 let EXTRACTED = { logo:null };
+// Colour fields the user has explicitly set (typed, swatch-clicked, or picked from
+// a PDF brand pack). A later "Analyze website" run must not silently overwrite these.
+const USER_TOUCHED = new Set();
 
 // ---- fan-out maps (evidence-based from real client exports) ----
 const HEAD_FONT=['header-family','title-family','article-heading-family'];
@@ -819,8 +822,13 @@ function contrast(hex){
 }
 
 // ---- website extraction ----
-function setColorField(key,hex){
+function setColorField(key,hex,opts){
   hex=normHex(hex); if(!hex) return;
+  opts=opts||{};
+  // an auto (website-analysis) write must never clobber a colour the user already
+  // set by hand or from an uploaded brand pack
+  if(opts.auto && USER_TOUCHED.has(key)) return;
+  if(!opts.auto) USER_TOUCHED.add(key);
   const tx=document.querySelector('input[data-t="'+key+'"]');
   const pk=document.querySelector('input[data-c="'+key+'"]');
   if(tx) tx.value=hex; if(pk) pk.value=hex;
@@ -1023,12 +1031,12 @@ function renderImages(list){
 }
 function applyExtraction(d){
   // colours: primary seeds the brand-accent fields as a starting point
-  setColorField('primary', d.primary);
-  setColorField('secondary', d.secondary);
-  setColorField('logoBg', '#ffffff');   // logos are designed for a light bg — never default to a dark primary
-  setColorField('btnBg', d.primary);
-  setColorField('footerBg', d.primary);
-  setColorField('headColor', d.primary);
+  setColorField('primary', d.primary, {auto:true});
+  setColorField('secondary', d.secondary, {auto:true});
+  setColorField('logoBg', '#ffffff', {auto:true});   // logos are designed for a light bg — never default to a dark primary
+  setColorField('btnBg', d.primary, {auto:true});
+  setColorField('footerBg', d.primary, {auto:true});
+  setColorField('headColor', d.primary, {auto:true});
   // fonts (reject leaked CSS variables / junk)
   if(d.headFont && !isJunkFont(d.headFont)) setFont('headFont', d.headFont);
   if(d.bodyFont && !isJunkFont(d.bodyFont)) setFont('bodyFont', d.bodyFont);
@@ -1377,8 +1385,8 @@ document.querySelectorAll('input[data-c]').forEach(p=>{
   const key=p.getAttribute('data-c');
   const tx=document.querySelector('input[data-t="'+key+'"]');
   p.value=normHex(tx.value);
-  p.addEventListener('input',()=>{tx.value=p.value;refresh();});
-  tx.addEventListener('input',()=>{const h=normHex(tx.value); if(h)p.value=h; refresh();});
+  p.addEventListener('input',()=>{tx.value=p.value;USER_TOUCHED.add(key);refresh();});
+  tx.addEventListener('input',()=>{const h=normHex(tx.value); if(h){p.value=h;USER_TOUCHED.add(key);} refresh();});
 });
 function normHex(v){v=(v||'').trim(); if(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)){if(v.length===4)v='#'+v.slice(1).split('').map(c=>c+c).join('');return v;} return null;}
 

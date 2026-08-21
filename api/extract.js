@@ -6,8 +6,31 @@
 const cheerio = require('cheerio');
 
 const TIMEOUT_MS = 9000;
-const MAX_CSS_FILES = 6;
+const MAX_CSS_FILES = 16;
 const MAX_BYTES = 2_000_000;
+
+// ---------- stylesheet triage ----------
+// Real-world sites (WordPress themes especially) link 15-30+ stylesheets. Most of
+// that is vendor/icon-font/grid boilerplate that never carries a brand colour — the
+// actual brand accent usually lives in the theme's own stylesheet or, for themes
+// like Salient/Avada/Divi that expose a "customizer" colour picker, in a generated
+// "dynamic"/"custom" styles file. Fetching stylesheets in raw document order (as
+// before, capped at a low count) reliably grabs the vendor noise and misses the
+// one file that actually has the brand colour. Classify and prioritise instead.
+function classifyStylesheet(url) {
+  const u = url.toLowerCase();
+  if (/dynamic|customi[sz]er|theme-?option|theme-?colou?r|accent-?colou?r/.test(u)) return 'dynamic';
+  if (/font-?awesome|iconsmind|icon-?font|glyphicon|fontello|dashicons/.test(u)) return 'icon';
+  if (/grid-system|off-?canvas|magnific|js_composer|animate\.css|swiper|slick|owl-carousel|select2|flatpickr|lightbox|stripe|estimate|composer/.test(u)) return 'vendor';
+  if (/\/plugins\//.test(u)) return 'plugin';
+  if (/\/themes\//.test(u) || /style\.css/.test(u)) return 'theme';
+  return 'other';
+}
+const STYLESHEET_PRIORITY = { dynamic: 0, theme: 1, other: 2, plugin: 3, vendor: 4, icon: 5 };
+// Colour hits get weighted by source: a theme's own/customizer-generated CSS is a
+// far stronger brand signal than a payment-widget or icon-font stylesheet, which
+// would otherwise flood the frequency count with unrelated colours.
+const STYLESHEET_WEIGHT = { dynamic: 6, theme: 2, other: 1, plugin: 0.4, vendor: 0.15, icon: 0.05, inline: 3 };
 
 // ---------- safety: block private / internal targets (basic SSRF guard) ----------
 function hostLooksPrivate(host) {
@@ -96,8 +119,13 @@ const FRAMEWORK_DEFAULTS = new Set([
 ]);
 function isFrameworkDefault(hex) { return !!hex && FRAMEWORK_DEFAULTS.has(hex); }
 
-function extractColours(cssText, signals) {
+function extractColours(cssChunks, signals) {
   signals = signals || {};
+  // Back-compat: a plain string is treated as one 'other'-weighted chunk (also
+  // how the test hook / any external caller passing a single string still works).
+  if (typeof cssChunks === 'string') cssChunks = [{ text: cssChunks, weight: 1 }];
+  cssChunks = cssChunks || [];
+
   const inlineColours = signals.inlineColours || [];
   // declared brand signals — trusted over CSS frequency
   const themeHex = (function () { const h = normHex(signals.themeColor); return h && !isNeutral(h) ? h : null; })();
@@ -113,10 +141,14 @@ function extractColours(cssText, signals) {
   };
   // colours from inline style attributes (often header/buttons) get a small boost
   inlineColours.forEach((c) => bump(c, 3));
-  // all colours in the CSS text
+  // colours in each CSS source, weighted by how likely that source is to carry
+  // the real brand colour (theme/customizer CSS) vs. noise (vendor/icon CSS)
   const re = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)/g;
-  let m;
-  while ((m = re.exec(cssText))) bump(m[0], 1);
+  cssChunks.forEach(({ text, weight }) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text || ''))) bump(m[0], weight);
+  });
 
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
   const brandReal = ranked.filter((h) => !isNeutral(h) && !isFrameworkDefault(h)); // genuine brand-ish colours
@@ -397,18 +429,28 @@ module.exports = async (req, res) => {
     const $ = cheerio.load(page.text);
     const base = page.finalUrl;
 
-    // gather CSS: inline <style>, then linked stylesheets (capped)
+    // gather CSS: inline <style> (weighted like page-authored CSS), then linked
+    // stylesheets — prioritised so a theme's own/customizer CSS is fetched before
+    // vendor/icon-font boilerplate when there are more links than the fetch cap.
     let css = '';
-    $('style').each((i, el) => { css += '\n' + $(el).html(); });
+    const cssChunks = [];
+    $('style').each((i, el) => { const t = $(el).html() || ''; css += '\n' + t; cssChunks.push({ text: t, weight: STYLESHEET_WEIGHT.inline }); });
 
     const cssLinks = [];
     $('link[rel="stylesheet"], link[as="style"]').each((i, el) => {
       const href = $(el).attr('href');
       if (href) { try { cssLinks.push(new URL(href, base).href); } catch (e) {} }
     });
-    const toFetch = cssLinks.slice(0, MAX_CSS_FILES);
+    const prioritised = [...cssLinks].sort(
+      (a, b) => STYLESHEET_PRIORITY[classifyStylesheet(a)] - STYLESHEET_PRIORITY[classifyStylesheet(b)]
+    );
+    const toFetch = prioritised.slice(0, MAX_CSS_FILES);
     const cssTexts = await Promise.allSettled(toFetch.map((u) => fetchText(u)));
-    cssTexts.forEach((r) => { if (r.status === 'fulfilled') css += '\n' + r.value.text; });
+    cssTexts.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return;
+      css += '\n' + r.value.text;
+      cssChunks.push({ text: r.value.text, weight: STYLESHEET_WEIGHT[classifyStylesheet(toFetch[i])] });
+    });
 
     // inline style="" attributes (colours)
     const inlineColours = [];
@@ -426,7 +468,7 @@ module.exports = async (req, res) => {
     // best-effort: read brand colours from the first SVG logo candidate
     const svgLogo = logos.find((u) => /\.svg(\?|$)/i.test(u));
     const logoColours = await fetchLogoColours(svgLogo);
-    const colours = extractColours(css, { themeColor, tileColor, logoColours, inlineColours });
+    const colours = extractColours(cssChunks, { themeColor, tileColor, logoColours, inlineColours });
     const images = extractImages($, base, new Set(logos));
 
     const title = ($('title').first().text() || '').trim().slice(0, 80);
