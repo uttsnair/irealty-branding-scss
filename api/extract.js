@@ -8,6 +8,7 @@ const { createEvidence, collectCssEvidence, buildResult, normHex, isFrameworkDef
 const { logoColours, addLogoEvidence } = require('../lib/logo-colours');
 const { UA, TIMEOUT_MS, IMG_MAX, hostLooksPrivate, fetchBinary } = require('../lib/net');
 const { detectBlockedPage } = require('../lib/page-guard');
+const { isOtherBrandLogo, isWidgetAsset, sameSite } = require('../lib/third-party');
 const { cleanFamily, prettyFont, googleFamilies } = require('../lib/fonts');
 
 const PAGE_TIMEOUT_MS = 14000; // the homepage itself: some agency sites are slow to first byte
@@ -24,6 +25,7 @@ const MAX_BYTES = 2_000_000;
 // one file that actually has the brand colour. Classify and prioritise instead.
 function classifyStylesheet(url) {
   const u = url.toLowerCase();
+  if (isWidgetAsset(u)) return 'vendor'; // review/chat widgets: other companies' colours
   if (/dynamic|customi[sz]er|theme-?option|theme-?colou?r|accent-?colou?r/.test(u)) return 'dynamic';
   if (/font-?awesome|iconsmind|icon-?font|glyphicon|fontello|dashicons/.test(u)) return 'icon';
   if (/grid-system|off-?canvas|magnific|js_composer|animate\.css|swiper|slick|owl-carousel|select2|flatpickr|lightbox|stripe|estimate|composer/.test(u)) return 'vendor';
@@ -103,6 +105,8 @@ function extractLogos($, base, cssText) {
     try {
       const abs = new URL(u, base).href;
       if (/^data:/.test(abs)) return;
+      if (isOtherBrandLogo(abs)) return;                                         // Google review badge, portal/social logos
+      if (!sameSite(abs, base)) score -= 40;                                     // an off-site image is rarely the agency's logo
       if (/\.svg(\?|$)/i.test(abs)) score += 45;                                   // real logos are often SVG
       if (/(_\d{2,4}x\d{2,4}_|[-/]crop|1200x630|og[-_]?image|social|share|hero|banner)/i.test(abs)) score -= 55; // share-card / hero, not a logo
       cands.push({ url: abs, score });

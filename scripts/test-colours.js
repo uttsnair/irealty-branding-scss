@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const { createEvidence, collectCssEvidence, buildResult, normHex, kindOf, selectorContext } = require('../lib/brand-colours');
 const { detectBlockedPage } = require('../lib/page-guard');
+const { isOtherBrandLogo, isWidgetAsset } = require('../lib/third-party');
 
 let n = 0;
 const test = (name, fn) => { fn(); n++; console.log('ok -', name); };
@@ -63,6 +64,22 @@ test('block pages are recognised; ordinary pages with vendor scripts are not', (
   assert.equal(detectBlockedPage(200, '<title>Parked Domain name on Hostinger DNS system</title>', 'Parked Domain name on Hostinger DNS system').reason, 'parked');
   assert.equal(detectBlockedPage(200, '<script src="/cdn-cgi/challenge-platform/h/b/scripts/x.js"></script>' + big, 'Smith Real Estate'), null);
   assert.equal(detectBlockedPage(200, '<button class="g-recaptcha" data-sitekey="x">Send</button></form>' + big, 'Smith Real Estate'), null);
+});
+
+test('third-party widget logos and styles are recognised, agency assets are not', () => {
+  assert.equal(isOtherBrandLogo('https://cdn.trustindex.io/assets/platform/Google/logo.svg'), true);
+  assert.equal(isOtherBrandLogo('https://www.realestate.com.au/logo.svg'), true);
+  assert.equal(isOtherBrandLogo('https://agency.com.au/uploads/google-reviews.png'), true);
+  assert.equal(isOtherBrandLogo('https://www.nextvisionrealestate.com.au/wp-content/uploads/2026/08/Next-Vision-Image-002.webp'), false);
+  assert.equal(isOtherBrandLogo('https://www.raywhite.com/apple-touch-icon.png'), false);
+  assert.equal(isOtherBrandLogo('https://visionrealty.com.au/img/logo.svg'), false);
+  assert.equal(isWidgetAsset('https://agency.com.au/wp-content/uploads/trustindex-google-widget.css'), true);
+  assert.equal(isWidgetAsset('https://agency.com.au/wp-content/themes/agency/style.css'), false);
+});
+
+test('review-widget selectors are noise', () => {
+  assert.equal(selectorContext('.ti-widget .ti-star'), 'noise');
+  assert.equal(selectorContext('.google-reviews .rating'), 'noise');
 });
 
 console.log(`\n${n} passed`);

@@ -47,7 +47,7 @@ function brandStudioCollect(STUDIO, opts) {
     if (s.visibility === 'hidden' || parseFloat(s.opacity) < 0.15) return null;
     return { r: r, s: s, a: Math.round(r.width * r.height) };
   }
-  var NOISE = '[class*="cookie" i],[id*="cookie" i],[class*="consent" i],[id*="consent" i],[class*="gdpr" i],[class*="social" i],[class*="share" i],[class*="chat" i],[id*="chat" i],[class*="intercom" i],[class*="recaptcha" i],[class*="alert" i],[class*="toast" i],[class*="badge" i],[class*="modal" i],#brand-studio-toast';
+  var NOISE = '[class*="cookie" i],[id*="cookie" i],[class*="consent" i],[id*="consent" i],[class*="gdpr" i],[class*="social" i],[class*="share" i],[class*="chat" i],[id*="chat" i],[class*="intercom" i],[class*="recaptcha" i],[class*="alert" i],[class*="toast" i],[class*="badge" i],[class*="modal" i],[class*="trustindex" i],[class*="ti-widget" i],[class*="review" i],[class*="rating" i],[class*="testimonial" i],[class*="elfsight" i],#brand-studio-toast';
   function noisy(el) { try { return !!el.closest(NOISE); } catch (e) { return false; } }
   function ownText(el) {
     for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3 && n.nodeValue.trim()) return true;
