@@ -2,6 +2,9 @@
   "functions": {
     "api/extract.js": {
       "maxDuration": 30
+    },
+    "api/extract-from-page.js": {
+      "maxDuration": 30
     }
   }
 }

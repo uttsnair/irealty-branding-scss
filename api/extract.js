@@ -4,11 +4,12 @@
 // Best-effort: the user reviews and corrects in the tool.
 
 const cheerio = require('cheerio');
-const { createEvidence, collectCssEvidence, buildResult, normHex, kindOf, isFrameworkDefault } = require('../lib/brand-colours');
-const { logoColours } = require('../lib/logo-colours');
+const { createEvidence, collectCssEvidence, buildResult, normHex, isFrameworkDefault } = require('../lib/brand-colours');
+const { logoColours, addLogoEvidence } = require('../lib/logo-colours');
+const { UA, TIMEOUT_MS, IMG_MAX, hostLooksPrivate, fetchBinary } = require('../lib/net');
 const { detectBlockedPage } = require('../lib/page-guard');
+const { cleanFamily, prettyFont, googleFamilies } = require('../lib/fonts');
 
-const TIMEOUT_MS = 9000;
 const PAGE_TIMEOUT_MS = 14000; // the homepage itself: some agency sites are slow to first byte
 const MAX_CSS_FILES = 16;
 const MAX_BYTES = 2_000_000;
@@ -35,21 +36,6 @@ const STYLESHEET_PRIORITY = { dynamic: 0, theme: 1, other: 2, plugin: 3, vendor:
 // far stronger brand signal than a payment-widget or icon-font stylesheet.
 const STYLESHEET_WEIGHT = { dynamic: 2, theme: 1.2, other: 1, plugin: 0.4, vendor: 0.15, icon: 0.05, inline: 1.5 };
 
-// ---------- safety: block private / internal targets (basic SSRF guard) ----------
-function hostLooksPrivate(host) {
-  host = (host || '').toLowerCase().replace(/^\[|\]$/g, '');
-  return (
-    host === 'localhost' ||
-    host === '0.0.0.0' ||
-    host === '::1' ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
-  );
-}
-
 async function fetchText(url, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS);
@@ -57,7 +43,7 @@ async function fetchText(url, timeoutMs) {
     const r = await fetch(url, {
       redirect: 'follow',
       signal: ctrl.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; BrandStudioBot/1.0)' },
+      headers: { 'User-Agent': UA },
     });
     const buf = Buffer.from(await r.arrayBuffer());
     const text = buf.slice(0, MAX_BYTES).toString('utf8');
@@ -67,38 +53,11 @@ async function fetchText(url, timeoutMs) {
   }
 }
 
-// ---------- font helpers ----------
-function cleanFamily(decl) {
-  if (!decl) return null;
-  const first = decl.split(',')[0].trim().replace(/^['"]|['"]$/g, '');
-  const generic = ['inherit', 'initial', 'unset', 'sans-serif', 'serif', 'monospace', 'system-ui', '-apple-system', 'blinkmacsystemfont'];
-  if (!first || generic.includes(first.toLowerCase())) return null;
-  if (/[:{}();]/.test(first)) return null;        // CSS property leakage, e.g. "object-fit: cover"
-  if (first.length > 40 || first.length < 2) return null;
-  return first;
-}
-
-// turn "playfair-display" into "Playfair Display", preferring a proper-cased variant if one exists
-function prettyFont(name, pool) {
-  if (!name) return name;
-  const norm = name.toLowerCase().replace(/[-_]+/g, ' ').trim();
-  const match = (pool || []).find((f) => f.toLowerCase().replace(/[-_]+/g, ' ').trim() === norm && /[A-Z]|\s/.test(f));
-  if (match) return match;
-  if (/^[a-z0-9-]+$/.test(name)) return name.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  return name;
-}
-
+// ---------- fonts ----------
 function extractFonts($, cssText) {
   const google = [];
   $('link[href*="fonts.googleapis.com"]').each((i, el) => {
-    const href = $(el).attr('href') || '';
-    const fams = href.match(/family=([^&]+)/g) || [];
-    fams.forEach((seg) => {
-      seg.replace('family=', '').split('|').forEach((fam) => {
-        const name = decodeURIComponent(fam.split(':')[0]).replace(/\+/g, ' ').trim();
-        if (name) google.push(name);
-      });
-    });
+    google.push(...googleFamilies($(el).attr('href')));
   });
 
   // walk CSS rule blocks to find heading vs body fonts
@@ -222,24 +181,6 @@ function extractImages($, base, logoSet) {
   });
   $('meta[property="og:image"]').each((i, el) => add($(el).attr('content'), 45));
   return [...out.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]).slice(0, 24);
-}
-
-// binary fetch for the download proxy (images can be larger than the HTML/CSS cap)
-const IMG_MAX = 12_000_000;
-async function fetchBinary(url) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const r = await fetch(url, {
-      redirect: 'follow',
-      signal: ctrl.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; BrandStudioBot/1.0)' },
-    });
-    const buf = Buffer.from(await r.arrayBuffer());
-    return { buf, status: r.status, contentType: r.headers.get('content-type') || '' };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // ---------- logo + inline colour evidence ----------
@@ -398,18 +339,7 @@ module.exports = async (req, res) => {
       || $('meta[name="msapplication-navbutton-color"]').attr('content'));
     if (themeColor) ev.add(themeColor, 'meta', 2.5);
     if (tileColor) ev.add(tileColor, 'meta', 2);
-    const logoRead = logoReads.find((l) => !l.reversed) || null;
-    if (logoRead) {
-      logoRead.colours.forEach((c) => {
-        const k = kindOf(c.hex);
-        if (k === 'chromatic') ev.add(c.hex, 'logo', logoRead.weight * Math.min(1, 0.35 + c.share * 2));
-        else if (k === 'dark') ev.add(c.hex, 'logo', logoRead.weight * 0.6 * Math.min(1, 0.3 + c.share * 2));
-      });
-    } else if (logoReads.length) {
-      warnings.push('The logo is white/reversed, so it couldn\u2019t confirm the brand colour \u2014 colours come from the site styling.');
-    } else {
-      warnings.push('Couldn\u2019t read colours from the logo \u2014 colours come from the site styling only.');
-    }
+    const logoRead = addLogoEvidence(ev, logoReads, warnings);
     const colours = buildResult(ev);
     if ($('body').text().replace(/\s+/g, ' ').trim().length < 300 && cssChunks.length < 3) {
       warnings.push('This site draws itself with JavaScript, so there was little styling to read. Double-check the colours, or upload the logo.');

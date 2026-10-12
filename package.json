@@ -11,7 +11,7 @@
     "puppeteer-core": "^23.11.1"
   },
   "scripts": {
-    "test": "node scripts/test-colours.js",
+    "test": "node scripts/test-colours.js && node scripts/test-page-extract.js",
     "dev": "node scripts/dev-server.js"
   },
   "engines": {
