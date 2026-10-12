@@ -4,6 +4,17 @@
   "private": true,
   "description": "Website brand extractor API for iRealty Brand Studio",
   "dependencies": {
-    "cheerio": "^1.0.0"
+    "cheerio": "^1.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.11.1"
+  },
+  "scripts": {
+    "test": "node scripts/test-colours.js",
+    "dev": "node scripts/dev-server.js"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

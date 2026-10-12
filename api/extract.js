@@ -4,8 +4,12 @@
 // Best-effort: the user reviews and corrects in the tool.
 
 const cheerio = require('cheerio');
+const { createEvidence, collectCssEvidence, buildResult, normHex, kindOf, isFrameworkDefault } = require('../lib/brand-colours');
+const { logoColours } = require('../lib/logo-colours');
+const { detectBlockedPage } = require('../lib/page-guard');
 
 const TIMEOUT_MS = 9000;
+const PAGE_TIMEOUT_MS = 14000; // the homepage itself: some agency sites are slow to first byte
 const MAX_CSS_FILES = 16;
 const MAX_BYTES = 2_000_000;
 
@@ -27,10 +31,9 @@ function classifyStylesheet(url) {
   return 'other';
 }
 const STYLESHEET_PRIORITY = { dynamic: 0, theme: 1, other: 2, plugin: 3, vendor: 4, icon: 5 };
-// Colour hits get weighted by source: a theme's own/customizer-generated CSS is a
-// far stronger brand signal than a payment-widget or icon-font stylesheet, which
-// would otherwise flood the frequency count with unrelated colours.
-const STYLESHEET_WEIGHT = { dynamic: 6, theme: 2, other: 1, plugin: 0.4, vendor: 0.15, icon: 0.05, inline: 3 };
+// Colour evidence gets weighted by source: a theme's own/customizer-generated CSS is a
+// far stronger brand signal than a payment-widget or icon-font stylesheet.
+const STYLESHEET_WEIGHT = { dynamic: 2, theme: 1.2, other: 1, plugin: 0.4, vendor: 0.15, icon: 0.05, inline: 1.5 };
 
 // ---------- safety: block private / internal targets (basic SSRF guard) ----------
 function hostLooksPrivate(host) {
@@ -47,9 +50,9 @@ function hostLooksPrivate(host) {
   );
 }
 
-async function fetchText(url) {
+async function fetchText(url, timeoutMs) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS);
   try {
     const r = await fetch(url, {
       redirect: 'follow',
@@ -62,124 +65,6 @@ async function fetchText(url) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-// ---------- colour helpers ----------
-function normHex(c) {
-  if (!c) return null;
-  c = String(c).trim().toLowerCase();
-  let m;
-  if ((m = c.match(/^#([0-9a-f]{3})$/))) return '#' + m[1].split('').map((x) => x + x).join('');
-  if ((m = c.match(/^#([0-9a-f]{6})$/))) return c;
-  if ((m = c.match(/^#([0-9a-f]{8})$/))) return '#' + m[1].slice(0, 6); // drop alpha
-  if ((m = c.match(/^rgba?\(([^)]+)\)/))) {
-    const p = m[1].split(',').map((x) => parseFloat(x.trim()));
-    if (p.length >= 3) {
-      const a = p[3] === undefined ? 1 : p[3];
-      if (a < 0.4) return null; // mostly transparent, ignore
-      const h = p.slice(0, 3).map((n) => {
-        let v = Math.max(0, Math.min(255, Math.round(n))).toString(16);
-        return v.length < 2 ? '0' + v : v;
-      }).join('');
-      return '#' + h;
-    }
-  }
-  return null;
-}
-function rgb(hex) {
-  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
-}
-function lum(hex) {
-  const [r, g, b] = rgb(hex);
-  return 0.299 * r + 0.587 * g + 0.114 * b;
-}
-function sat(hex) {
-  const [r, g, b] = rgb(hex);
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  return max === 0 ? 0 : (max - min) / max;
-}
-function isNeutral(hex) {
-  return sat(hex) < 0.12 || lum(hex) > 240 || lum(hex) < 12;
-}
-
-// Colours that ship as framework / CMS defaults — almost never the real brand.
-// A frequency counter over the stylesheet will over-count these (they're referenced
-// by every default button/link rule), so they must not win primary/secondary unless
-// there is genuinely nothing else to go on.
-const FRAMEWORK_DEFAULTS = new Set([
-  '#1779ba', '#14679e', '#126195', '#1468a0',            // Zurb Foundation
-  '#007bff', '#0069d9', '#0062cc',                       // Bootstrap 4
-  '#0d6efd', '#0b5ed7', '#0a58ca',                       // Bootstrap 5
-  '#337ab7', '#2e6da4', '#286090', '#23527c', '#428bca', // Bootstrap 3
-  '#0056b3',                                             // Bootstrap link
-  '#0073aa', '#007cba', '#2271b1', '#135e96', '#0071a1', // WordPress / Gutenberg
-  '#3273dc', '#485fc7', '#00d1b2',                       // Bulma
-  '#1eaedb', '#0fa0ce',                                  // Skeleton
-  '#0000ee', '#0645ad', '#1a0dab', '#0066cc',            // generic default link blues
-]);
-function isFrameworkDefault(hex) { return !!hex && FRAMEWORK_DEFAULTS.has(hex); }
-
-function extractColours(cssChunks, signals) {
-  signals = signals || {};
-  // Back-compat: a plain string is treated as one 'other'-weighted chunk (also
-  // how the test hook / any external caller passing a single string still works).
-  if (typeof cssChunks === 'string') cssChunks = [{ text: cssChunks, weight: 1 }];
-  cssChunks = cssChunks || [];
-
-  const inlineColours = signals.inlineColours || [];
-  // declared brand signals — trusted over CSS frequency
-  const themeHex = (function () { const h = normHex(signals.themeColor); return h && !isNeutral(h) ? h : null; })();
-  const tileHex = (function () { const h = normHex(signals.tileColor); return h && !isNeutral(h) ? h : null; })();
-  const logoColours = (signals.logoColours || [])
-    .map(normHex).filter((h) => h && !isNeutral(h) && !isFrameworkDefault(h));
-
-  const counts = new Map();
-  const bump = (raw, weight) => {
-    const h = normHex(raw);
-    if (!h) return;
-    counts.set(h, (counts.get(h) || 0) + weight);
-  };
-  // colours from inline style attributes (often header/buttons) get a small boost
-  inlineColours.forEach((c) => bump(c, 3));
-  // colours in each CSS source, weighted by how likely that source is to carry
-  // the real brand colour (theme/customizer CSS) vs. noise (vendor/icon CSS)
-  const re = /#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)/g;
-  cssChunks.forEach(({ text, weight }) => {
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(text || ''))) bump(m[0], weight);
-  });
-
-  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
-  const brandReal = ranked.filter((h) => !isNeutral(h) && !isFrameworkDefault(h)); // genuine brand-ish colours
-  const brandFallback = ranked.filter((h) => !isNeutral(h) && isFrameworkDefault(h)); // last resort only
-
-  // A declared brand signal beats raw CSS frequency. This is the key fix: a framework
-  // default (e.g. Foundation's #1779ba) is often the most-repeated colour in the CSS,
-  // but the site's own theme-color / tile-color / logo is what the brand actually is.
-  const primary = themeHex || tileHex || logoColours[0] || brandReal[0] || brandFallback[0] || ranked[0] || '#333333';
-
-  let secondary = '#666666';
-  const secondaryPool = [tileHex, logoColours[0], logoColours[1], ...brandReal, themeHex];
-  for (const h of secondaryPool) { if (h && h !== primary) { secondary = h; break; } }
-
-  // palette: signals + real brand colours first, then neutrals; framework defaults dropped entirely
-  const palette = []; const seen = new Set();
-  const pushUnique = (h) => { if (h && !seen.has(h)) { seen.add(h); palette.push(h); } };
-  [primary, secondary, themeHex, tileHex].forEach(pushUnique);
-  logoColours.forEach(pushUnique);
-  brandReal.forEach(pushUnique);
-  ranked.forEach((h) => { if (!isFrameworkDefault(h)) pushUnique(h); });
-
-  return {
-    primary,
-    secondary,
-    palette: palette.slice(0, 14),
-    themeColor: themeHex,
-    tileColor: tileHex,
-    logoColours,
-    filteredFrameworkColours: brandFallback.filter((h) => h !== primary),
-  };
 }
 
 // ---------- font helpers ----------
@@ -290,20 +175,6 @@ function extractLogos($, base, cssText) {
   return [...best.entries()].sort((a, b) => b[1] - a[1]).map((e) => e[0]).slice(0, 8);
 }
 
-// pull brand colours straight out of an SVG logo. Positive logos carry the brand
-// colour; reverse/white logos won't — which is fine, theme-color covers those.
-async function fetchLogoColours(logoUrl) {
-  if (!logoUrl || !/\.svg(\?|$)/i.test(logoUrl)) return [];
-  try {
-    const r = await fetchText(logoUrl);
-    if (!/svg/i.test(r.contentType || '') && !/<svg/i.test(r.text)) return [];
-    const hits = (r.text.match(/#[0-9a-fA-F]{3,8}\b/g) || []).concat(r.text.match(/rgba?\([^)]+\)/g) || []);
-    const counts = new Map();
-    hits.forEach((c) => { const h = normHex(c); if (h) counts.set(h, (counts.get(h) || 0) + 1); });
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([h]) => h);
-  } catch (e) { return []; }
-}
-
 // ---------- reference image gallery (photos, hero/banner, brand graphics) ----------
 // These are for the person to eyeball and download by hand, then re-host on S3.
 // The tool never wires these URLs into the SCSS or a module.
@@ -371,6 +242,50 @@ async function fetchBinary(url) {
   }
 }
 
+// ---------- logo + inline colour evidence ----------
+// Read the first few logo candidates' pixels; a reversed (white) logo is kept but
+// flagged so the caller can fall through to the next candidate.
+async function readLogoColours($, base, logos) {
+  const icons = new Set();
+  $('link[rel~="icon"], link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"]').each((i, el) => {
+    try { icons.add(new URL($(el).attr('href'), base).href); } catch (e) {}
+  });
+  const cands = logos.filter((u) => !/\.ico(\?|$)/i.test(u)).slice(0, 3);
+  const reads = await Promise.all(cands.map(async (u) => {
+    try {
+      const u2 = new URL(u);
+      if (hostLooksPrivate(u2.hostname)) return null;
+      const img = await fetchBinary(u);
+      if (img.status >= 400 || img.buf.length > IMG_MAX) return null;
+      const r = await logoColours(img.buf);
+      // favicons/app icons are brand-coloured but a weaker signal than the real logo
+      return r ? { url: u, weight: icons.has(u) ? 8 : 14, ...r } : null;
+    } catch (e) { return null; }
+  }));
+  return reads.filter(Boolean);
+}
+
+// style="" attributes: page builders write header/button colours inline
+function collectInlineEvidence($, ev) {
+  $('[style]').each((i, el) => {
+    const st = $(el).attr('style') || '';
+    if (!/#|rgb|hsl/i.test(st)) return;
+    const $el = $(el);
+    let ctx = 'inline', w = 0.4;
+    if ($el.is('button, .btn, .button, a[class*="btn"], a[class*="button"]')) { ctx = 'button'; w = 2; }
+    else if ($el.closest('header, nav, .header, #header, .navbar').length) { ctx = 'header'; w = 2; }
+    else if ($el.closest('footer, .footer, #footer').length) { ctx = 'footer'; w = 1.5; }
+    st.split(';').forEach((d) => {
+      const i2 = d.indexOf(':'); if (i2 < 0) return;
+      const prop = d.slice(0, i2).trim().toLowerCase();
+      const kind = prop.startsWith('background') ? 'bg' : prop.startsWith('border') ? 'border' : prop === 'color' ? 'fg' : null;
+      if (!kind) return;
+      const toks = d.slice(i2 + 1).match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)|hsla?\([^)]+\)/g) || [];
+      toks.slice(0, 1).forEach((t) => ev.add(t, ctx, kind === 'bg' ? w : w * 0.4, kind));
+    });
+  });
+}
+
 // ---------- main handler ----------
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -422,12 +337,26 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const page = await fetchText(parsed.href);
+    const page = await fetchText(parsed.href, PAGE_TIMEOUT_MS);
+    const $ = cheerio.load(page.text);
+    const title = ($('title').first().text() || '').trim().slice(0, 80);
+
+    // Bot walls, security checkpoints and error pages are not the agency's site.
+    // Reading colours off them is worse than useless, so stop and say why.
+    const blocked = detectBlockedPage(page.status, page.text, title);
+    if (blocked) {
+      res.status(422).json({
+        error: blocked.message,
+        blocked: blocked.reason,
+        hint: 'Upload the agency\u2019s logo (PNG/SVG) or brand guide PDF instead \u2014 the colours are read straight from that.',
+      });
+      return;
+    }
     if (!/html/i.test(page.contentType) && !/<html|<!doctype/i.test(page.text)) {
       res.status(422).json({ error: 'That URL did not return a web page.' }); return;
     }
-    const $ = cheerio.load(page.text);
     const base = page.finalUrl;
+    const warnings = [];
 
     // gather CSS: inline <style> (weighted like page-authored CSS), then linked
     // stylesheets — prioritised so a theme's own/customizer CSS is fetched before
@@ -441,38 +370,56 @@ module.exports = async (req, res) => {
       const href = $(el).attr('href');
       if (href) { try { cssLinks.push(new URL(href, base).href); } catch (e) {} }
     });
-    const prioritised = [...cssLinks].sort(
+    const prioritised = [...new Set(cssLinks)].sort(
       (a, b) => STYLESHEET_PRIORITY[classifyStylesheet(a)] - STYLESHEET_PRIORITY[classifyStylesheet(b)]
     );
     const toFetch = prioritised.slice(0, MAX_CSS_FILES);
-    const cssTexts = await Promise.allSettled(toFetch.map((u) => fetchText(u)));
+
+    const logos = extractLogos($, base, '');
+    // stylesheets and logo images download in parallel
+    const [cssTexts, logoReads] = await Promise.all([
+      Promise.allSettled(toFetch.map((u) => fetchText(u))),
+      readLogoColours($, base, logos),
+    ]);
     cssTexts.forEach((r, i) => {
-      if (r.status !== 'fulfilled') return;
+      if (r.status !== 'fulfilled' || r.value.status >= 400) return;
       css += '\n' + r.value.text;
       cssChunks.push({ text: r.value.text, weight: STYLESHEET_WEIGHT[classifyStylesheet(toFetch[i])] });
     });
+    // CSS background-image logos only show up once the stylesheets are in
+    const allLogos = [...new Set([...logos, ...extractLogos($, base, css)])].slice(0, 8);
 
-    // inline style="" attributes (colours)
-    const inlineColours = [];
-    $('[style]').each((i, el) => {
-      const st = $(el).attr('style') || '';
-      const ms = st.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)/g);
-      if (ms) inlineColours.push(...ms);
-    });
+    // ---- colour evidence ----
+    const ev = createEvidence();
+    collectCssEvidence(ev, cssChunks);
+    collectInlineEvidence($, ev);
+    const themeColor = normHex($('meta[name="theme-color"]').first().attr('content'));
+    const tileColor = normHex($('meta[name="msapplication-TileColor"]').attr('content')
+      || $('meta[name="msapplication-navbutton-color"]').attr('content'));
+    if (themeColor) ev.add(themeColor, 'meta', 2.5);
+    if (tileColor) ev.add(tileColor, 'meta', 2);
+    const logoRead = logoReads.find((l) => !l.reversed) || null;
+    if (logoRead) {
+      logoRead.colours.forEach((c) => {
+        const k = kindOf(c.hex);
+        if (k === 'chromatic') ev.add(c.hex, 'logo', logoRead.weight * Math.min(1, 0.35 + c.share * 2));
+        else if (k === 'dark') ev.add(c.hex, 'logo', logoRead.weight * 0.6 * Math.min(1, 0.3 + c.share * 2));
+      });
+    } else if (logoReads.length) {
+      warnings.push('The logo is white/reversed, so it couldn\u2019t confirm the brand colour \u2014 colours come from the site styling.');
+    } else {
+      warnings.push('Couldn\u2019t read colours from the logo \u2014 colours come from the site styling only.');
+    }
+    const colours = buildResult(ev);
+    if ($('body').text().replace(/\s+/g, ' ').trim().length < 300 && cssChunks.length < 3) {
+      warnings.push('This site draws itself with JavaScript, so there was little styling to read. Double-check the colours, or upload the logo.');
+    }
+    if (colours.confidence === 'low') warnings.push('Low confidence in these colours \u2014 compare them against the logo before using them.');
 
-    const themeColor = $('meta[name="theme-color"]').attr('content') || null;
-    const tileColor = $('meta[name="msapplication-TileColor"]').attr('content')
-      || $('meta[name="msapplication-navbutton-color"]').attr('content') || null;
     const fonts = extractFonts($, css);
-    const logos = extractLogos($, base, css);
-    // best-effort: read brand colours from the first SVG logo candidate
-    const svgLogo = logos.find((u) => /\.svg(\?|$)/i.test(u));
-    const logoColours = await fetchLogoColours(svgLogo);
-    const colours = extractColours(cssChunks, { themeColor, tileColor, logoColours, inlineColours });
-    const images = extractImages($, base, new Set(logos));
-
-    const title = ($('title').first().text() || '').trim().slice(0, 80);
+    const images = extractImages($, base, new Set(allLogos));
     const siteName = $('meta[property="og:site_name"]').attr('content') || title || parsed.hostname;
+    const logo = (logoRead && logoRead.url) || allLogos[0] || null;
 
     res.status(200).json({
       ok: true,
@@ -481,23 +428,28 @@ module.exports = async (req, res) => {
       siteName,
       primary: colours.primary,
       secondary: colours.secondary,
-      themeColor: colours.themeColor,
-      tileColor: colours.tileColor,
+      confidence: colours.confidence,
+      primarySources: colours.primarySources,
+      secondarySources: colours.secondarySources,
       palette: colours.palette,
-      filteredFrameworkColours: colours.filteredFrameworkColours,
+      paletteDetail: colours.paletteDetail,
+      themeColor,
+      tileColor,
+      logoColours: logoRead ? logoRead.colours : [],
+      warnings,
       headFont: fonts.headFont,
       bodyFont: fonts.bodyFont,
       googleFonts: fonts.googleFonts,
       allFonts: fonts.allFonts,
-      logo: logos[0] || null,
-      logoCandidates: logos,
+      logo,
+      logoCandidates: [...new Set([logo, ...allLogos].filter(Boolean))].slice(0, 8),
       images: images,
       notes: [
-        'Best-guess extraction — review and correct before generating SCSS.',
-        'Primary prefers the site theme-color / tile-color / logo colour over raw CSS frequency.',
-        'Known framework defaults (e.g. Foundation #1779ba, Bootstrap blues) are filtered out of the brand colours.',
-        'Logo is for reference/upload — it is not stored in the SCSS.',
-        'Images are reference only — download and re-host on S3; they are never wired into the SCSS or a module.',
+        'Best-guess extraction \u2014 review and correct before generating SCSS.',
+        'Colours are ranked by where the site uses them: logo pixels, buttons, header, the theme\u2019s named brand colours, then everything else.',
+        'Framework, page-builder and social-widget default colours are discounted.',
+        'Logo is for reference/upload \u2014 it is not stored in the SCSS.',
+        'Images are reference only \u2014 download and re-host on S3; they are never wired into the SCSS or a module.',
       ],
     });
   } catch (err) {
@@ -510,4 +462,4 @@ module.exports = async (req, res) => {
 };
 
 // ---------- test hooks (safe for Vercel: attaching props to the handler export) ----------
-module.exports._internal = { extractColours, normHex, isFrameworkDefault, isNeutral, extractImages };
+module.exports._internal = { normHex, isFrameworkDefault, extractImages, detectBlockedPage };

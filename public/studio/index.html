@@ -814,6 +814,13 @@ function renderPreview(s){
   document.getElementById('nlStyle').textContent=css;
 }
 
+function esc(t){ return String(t==null?'':t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// WCAG contrast ratio between two hex colours
+function contrastRatio(a,b){
+  const L=h=>{ h=normHex(h)||'#000000'; const c=[1,3,5].map(i=>{ let v=parseInt(h.substr(i,2),16)/255; return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4); });
+    return 0.2126*c[0]+0.7152*c[1]+0.0722*c[2]; };
+  const x=L(a),y=L(b); return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05);
+}
 // pick readable text colour for a bg
 function contrast(hex){
   hex=(hex||'#000').replace('#',''); if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');
@@ -993,10 +1000,14 @@ function disarmColorField(){
 }
 function renderPalette(colors, append){
   const pr=document.getElementById('paletteRow'); if(!append) pr.innerHTML='';
-  (colors||[]).forEach(hex=>{
+  (colors||[]).forEach(c=>{
+    // a swatch is a plain hex, or {hex, role, sources} from the website extractor
+    const hex=typeof c==='string'?c:c.hex;
+    const found=(c&&c.sources&&c.sources.length)?('\nFound in: '+c.sources.join(', ')):'';
+    const role=c&&c.role?(' \u2014 suggested '+c.role):'';
     const sw=document.createElement('button'); sw.type='button';
-    sw.title=hex+(ARMED_COLOR?('  \u2192 '+(COLOR_LABELS[ARMED_COLOR]||ARMED_COLOR)):'  (click = primary, right-click = secondary)');
-    sw.style.cssText='width:30px;height:30px;border-radius:6px;border:1px solid #ccc;cursor:pointer;background:'+hex;
+    sw.title=hex+role+found+'\n'+(ARMED_COLOR?('\u2192 '+(COLOR_LABELS[ARMED_COLOR]||ARMED_COLOR)):'(click = primary, right-click = secondary)');
+    sw.style.cssText='width:30px;height:30px;border-radius:6px;border:1px solid #ccc;cursor:pointer;background:'+hex+(c&&c.role?';box-shadow:0 0 0 2px #fff,0 0 0 3.5px #2f6df0':'');
     sw.onclick=()=>{
       if(ARMED_COLOR){ setColorField(ARMED_COLOR,hex); }
       else { setColorField('primary',hex); setColorField('btnBg',hex); setColorField('footerBg',hex); }
@@ -1035,8 +1046,13 @@ function applyExtraction(d){
   setColorField('secondary', d.secondary, {auto:true});
   setColorField('logoBg', '#ffffff', {auto:true});   // logos are designed for a light bg — never default to a dark primary
   setColorField('btnBg', d.primary, {auto:true});
+  setColorField('btnColor', contrast(d.primary)==='#ffffff'?'#ffffff':'#1f2733', {auto:true});
   setColorField('footerBg', d.primary, {auto:true});
-  setColorField('headColor', d.primary, {auto:true});
+  setColorField('footerColor', contrast(d.primary)==='#ffffff'?'#ffffff':'#1f2733', {auto:true});
+  // headings sit on white: a pale brand colour (yellow, gold, mint) would be unreadable,
+  // so fall back to the secondary (usually the brand's charcoal/navy) or dark grey
+  const headCol=[d.primary,d.secondary].find(h=>h&&contrastRatio(h,'#ffffff')>=3);
+  setColorField('headColor', headCol||'#333f48', {auto:true});
   // fonts (reject leaked CSS variables / junk)
   if(d.headFont && !isJunkFont(d.headFont)) setFont('headFont', d.headFont);
   if(d.bodyFont && !isJunkFont(d.bodyFont)) setFont('bodyFont', d.bodyFont);
@@ -1061,7 +1077,7 @@ function applyExtraction(d){
   // website image gallery (reference — download & re-host)
   renderImages(d.images||[]);
   // palette swatches
-  renderPalette(d.palette||[]);
+  renderPalette(d.paletteDetail||d.palette||[]);
   // fonts chips (drop leaked CSS variables / junk)
   const fr=document.getElementById('fontsRow'); fr.innerHTML='';
   const cleanFonts=(d.allFonts||[]).filter(f=>!isJunkFont(f));
@@ -1079,6 +1095,12 @@ function applyExtraction(d){
   refresh();
 }
 
+// hide the previous site's swatches/fonts/logo/images so they can't be mistaken for this one's
+function clearDetected(){
+  ['paletteWrap','fontsWrap','logoWrap','imgWrap'].forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
+  ['paletteRow','fontsRow','logoCands','imgRow'].forEach(id=>{ const e=document.getElementById(id); if(e) e.innerHTML=''; });
+  EXTRACTED.logo=null;
+}
 async function analyzeWebsite(){
   const url=document.getElementById('siteUrl').value.trim();
   const st=document.getElementById('analyzeStatus');
@@ -1089,11 +1111,25 @@ async function analyzeWebsite(){
   try{
     const r=await fetch(apiBase()+'/api/extract?url='+encodeURIComponent(url));
     const d=await r.json();
+    if(d.blocked){
+      // bot wall / checkpoint / parked page: nothing on it is the agency's brand
+      clearDetected();
+      st.style.color='#b54708';
+      st.innerHTML=esc(d.error)+'<br><b>'+esc(d.hint||'Upload the logo or brand guide instead.')+'</b> (see <i>Upload files</i> below)';
+      return;
+    }
     if(!r.ok||!d.ok){ throw new Error(d.error||('HTTP '+r.status)); }
     applyExtraction(d);
-    st.style.color='var(--good)';
-    st.textContent='Done — review the fields below and fix anything that looks off.';
+    const conf={high:'High confidence',medium:'Medium confidence',low:'Low confidence'}[d.confidence]||'';
+    const from=(arr)=>arr&&arr.length?' (from '+arr.join(', ').toLowerCase()+')':'';
+    let html='<span style="color:var(--good);font-weight:600">Done \u2014 '+esc(conf)+'.</span> '+
+      'Primary <b>'+esc(d.primary)+'</b>'+esc(from(d.primarySources))+', secondary <b>'+esc(d.secondary)+'</b>'+esc(from(d.secondarySources))+'. '+
+      'Hover a swatch to see where it was found; review the fields below.';
+    (d.warnings||[]).forEach(w=>{ html+='<br><span style="color:#b54708">\u26a0 '+esc(w)+'</span>'; });
+    st.style.color='var(--ink-soft)';
+    st.innerHTML=html;
   }catch(e){
+    clearDetected();
     st.style.color='#b54708';
     st.textContent='Couldn\u2019t read that site ('+e.message+'). Enter the brand manually below.';
   }finally{ btn.disabled=false; btn.textContent='Analyze website'; }

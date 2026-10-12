@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/extract.js": {
-      "maxDuration": 25
+      "maxDuration": 30
     }
   }
 }

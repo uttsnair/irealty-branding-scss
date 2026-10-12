@@ -104,15 +104,24 @@ It should return JSON with `primary`, `secondary`, `palette`, `headFont`, `bodyF
 
 ## How it guesses (so you know what to trust)
 
-| Field | How it's guessed | Reliability |
-|---|---|---|
-| **Primary colour** | `theme-color` meta tag first, otherwise the most-used non-neutral colour in the CSS | Good when a theme-color exists; otherwise a guess — check it |
-| **Secondary colour** | The next most-used brand colour | Often needs correcting |
-| **Palette** | Top ~14 colours by frequency | Use these as click-to-set options if the guess is wrong |
-| **Heading / body font** | Google Fonts links + `font-family` on `h1/h2` vs `body/p` | Good when Google Fonts are used |
-| **Logo** | Images in the header/nav, or any image with "logo" in its name, then og:image, then favicon | Usually right; sometimes grabs the wrong image |
+Colours are ranked by **where the site uses them**, not by how often a hex code appears in the CSS:
 
-It's intentionally **best-guess** — the tool shows the guesses and lets the user fix them. In the tool: **click a palette swatch** to set it as primary, **right-click** to set it as secondary; **click a font chip** to use it as the heading font, **right-click** for body.
+| Evidence | Weight | Why |
+|---|---|---|
+| **Logo pixels** (PNG/JPG/WebP/SVG, read with `sharp`) | Strongest — and it referees: colours in the logo are boosted, colours not in it are discounted | The logo is the brand |
+| **Theme colour settings** — CSS variables named `--primary`, `--brand`, `--accent`, Elementor globals | Strong | The theme's own declared brand colour |
+| **Buttons, header/menu bar** backgrounds | Strong | Where agencies put their brand colour |
+| Footer, headings, links | Medium | |
+| Everything else in the theme CSS | Weak, capped | |
+| Framework / page-builder / Tailwind / Bootstrap / social-widget defaults, alerts, badges, cookie banners | Heavily discounted | These were the main source of wrong colours |
+
+Near-identical shades are merged (so `#00aeef` and `#00adef` count as one). The secondary must be a genuinely different colour; charcoal/black counts when it's in the logo or used as a background. The response includes `confidence` (high/medium/low), `primarySources`/`secondarySources`, `paletteDetail` (each swatch with where it was found) and `warnings`.
+
+**Blocked sites:** if the site answers with a Cloudflare/Vercel bot check, a 403/429, an error page or a parked domain, the API returns HTTP 422 with `blocked` set and a message telling the user to upload the logo or brand guide instead. It no longer reads colours off those pages (that is how McGrath used to come back as Vercel blue). The extractor identifies itself honestly and does not try to get past bot checks.
+
+Fonts and logo candidates work as before (Google Fonts links + `font-family` on headings vs body; header/nav images, "logo" images, then icons).
+
+To check a change against real sites: `node scripts/run-extract.js raywhite.com.au century21.com.au ...`, `node scripts/debug-site.js <site>` for the full evidence table, and `npm test` for the unit checks. `npm run dev` serves the studio and API locally on port 3055.
 
 ---
 
